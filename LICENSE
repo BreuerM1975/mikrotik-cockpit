@@ -33,22 +33,25 @@ and/or modify the software.
 improvements made in alternate versions of the program, if they
 receive widespread use, become available for other developers to
 incorporate.  Many developers of free software are heartened and
-encouraged by the resulting cooperation.
+encouraged by the resulting cooperation.  However, in the case of
+software used on network servers, this result may fail to come about.
+The GNU General Public License permits making a modified version and
+letting the public access it on a server without ever releasing its
+source code to the public.
 
-  However, network server software presents a special problem.  The
-GNU General Public License is a good license for making sure that
-copies of free software distributed over the internet are free for all
-their users, but it does not prevent the party who installs the program
-on a server from releasing the modified program to the public, or even
-making it available to the public over the network, while keeping the
-code hidden from the users who use it.  This license, the GNU Affero
-General Public License, closes that loophole: the work must be made
-available to all users who interact with it over a computer network.
+  The GNU Affero General Public License is designed specifically to
+ensure that, in such cases, the modified source code becomes available
+to the community.  It requires the operator of a network server to
+provide the source code of the modified version running there to the
+users of that server.  Therefore, public use of a modified version, on
+a publicly accessible server, gives the public access to the source
+code of the modified version.
 
-  The GNU Affero General Public License is also a good choice for
-programs that, although they are not specifically designed for network
-use, are run by or on behalf of users in the situations where it is
-advantageous to make the modification history available to the public.
+  An older license, called the Affero General Public License and
+published by Affero, was designed to accomplish similar goals.  This is
+a different license, not a version of the Affero GPL, but Affero has
+released a new version of the Affero GPL which permits relicensing under
+this license.
 
   The precise terms and conditions for copying, distribution and
 modification follow.
@@ -75,7 +78,7 @@ earlier work or a work "based on" the earlier work.
 on the Program.
 
   To "propagate" a work means to do anything with it that, without
-permission, would make you directly or secondary liable for
+permission, would make you directly or secondarily liable for
 infringement under applicable copyright law, except executing it on a
 computer or modifying a private copy.  Propagation includes copying,
 distribution (with or without modification), making available to the
@@ -300,26 +303,24 @@ suffice to ensure that the continued functioning of the modified object
 code is in no case prevented or interfered with solely because
 modification has been made.
 
-  If you convey an object code work under this section in, or embodied in,
-a specific User Product, and the Corresponding Source is not conveyed
-with the object code, and the recipient has the ability to copy the
-object code into the User Product, or an intermediate user, or an end
-user, or an end user that receives or uses the User Product in any way,
-then you must provide the Installation Information to the extent required
-under this subsection.  This subsection does not apply if you or any
-third party retains the ability to install modified object code on the
-User Product (for example, the User Product may be a device with firmware
-that the manufacturer provides a way to update, and the ability to run
-the mod is not needed beyond the initial run, and the user may decide at
-a later point to revert to the original firmware).  The requirement for
-Installation Information does not include a requirement to continue to
-provide support service, warranty, or updates for a work that has been
-modified or installed by the recipient, or for the User Product in which
-it has been modified or installed.
+  If you convey an object code work under this section in, or with, or
+specifically for use in, a User Product, and the conveying occurs as
+part of a transaction in which the right of possession and use of the
+User Product is transferred to the recipient in perpetuity or for a
+fixed term (regardless of how the transaction is characterized), the
+Corresponding Source conveyed under this section must be accompanied
+by the Installation Information.  But this requirement does not apply
+if neither you nor any third party retains the ability to install
+modified object code on the User Product (for example, the work has
+been installed in ROM).
 
-  Access to a network may be denied when the modification itself
-materially and adversely affects the operation of the network or
-violates the rules and protocols for communication across the network.
+  The requirement to provide Installation Information does not include a
+requirement to continue to provide support service, warranty, or updates
+for a work that has been modified or installed by the recipient, or for
+the User Product in which it has been modified or installed.  Access to a
+network may be denied when the modification itself materially and
+adversely affects the operation of the network or violates the rules and
+protocols for communication across the network.
 
   Corresponding Source conveyed, and Installation Information provided,
 in accord with this section must be in a format that is publicly
@@ -346,8 +347,8 @@ additional permissions on material, added by you to a covered work,
 for which you have or can give appropriate copyright permission.
 
   Notwithstanding any other provision of this License, for material you
-add to a covered work, you may supplement the terms of this License
-with terms:
+add to a covered work, you may (if authorized by the copyright holders of
+that material) supplement the terms of this License with terms:
 
     a) Disclaiming warranty or limiting liability differently from the
     terms of sections 15 and 16 of this License; or
@@ -379,8 +380,8 @@ governed by this License along with a term that is a further
 restriction, you may remove that term.  If a license document contains
 a further restriction but permits relicensing or conveying under this
 License, you may add to a covered work material governed by the terms
-of that license document, provided that the further restriction does not
-survive such relicensing or conveying.
+of that license document, provided that the further restriction does
+not survive such relicensing or conveying.
 
   If you add terms to a covered work in accord with this section, you
 must place, in the relevant source files, a statement of the
@@ -467,7 +468,7 @@ hereafter acquired, that would be infringed by some manner, permitted
 by this License, of making, using, or selling its contributor version,
 but do not include claims that would be infringed only as a
 consequence of further modification of the contributor version.  For
-purposes of this definition, control includes the right to grant
+purposes of this definition, "control" includes the right to grant
 patent sublicenses in a manner consistent with the requirements of
 this License.
 
@@ -500,7 +501,7 @@ country that you have reason to believe are valid.
   If, pursuant to or in connection with a single transaction or
 arrangement, you convey, or propagate by procuring conveyance of, a
 covered work, and grant a patent license to some of the parties
-receiving the covered work, authorizing them to use, propagate, modify
+receiving the covered work authorizing them to use, propagate, modify
 or convey a specific copy of the covered work, then the patent license
 you grant is automatically extended to all recipients of the covered
 work and works based on it.
@@ -560,23 +561,23 @@ but the work with which it is combined will remain governed by version
   14. Revised Versions of this License.
 
   The Free Software Foundation may publish revised and/or new versions of
-the GNU Affero General Public License from time to time.  Such new
-versions will be similar in spirit to the present version, but may differ
-in detail to address new problems or concerns.
+the GNU Affero General Public License from time to time.  Such new versions
+will be similar in spirit to the present version, but may differ in detail to
+address new problems or concerns.
 
   Each version is given a distinguishing version number.  If the
-Program specifies that a certain numbered version of the GNU Affero
-General Public License "or any later version" applies to it, you have
-the option of following the terms and conditions either of that
-numbered version or of any later version published by the Free
-Software Foundation.  If the Program does not specify a version number,
-you may choose any version ever published by the Free Software
-Foundation.
+Program specifies that a certain numbered version of the GNU Affero General
+Public License "or any later version" applies to it, you have the
+option of following the terms and conditions either of that numbered
+version or of any later version published by the Free Software
+Foundation.  If the Program does not specify a version number of the
+GNU Affero General Public License, you may choose any version ever published
+by the Free Software Foundation.
 
   If the Program specifies that a proxy can decide which future
-versions of the GNU Affero General Public License can be used, that
-proxy's public statement of acceptance of a version permanently
-authorizes you to choose that version for the Program.
+versions of the GNU Affero General Public License can be used, that proxy's
+public statement of acceptance of a version permanently authorizes you
+to choose that version for the Program.
 
   Later license versions may give you additional or different
 permissions.  However, no additional obligations are imposed on any
@@ -615,9 +616,9 @@ an absolute waiver of all civil liability in connection with the
 Program, unless a warranty or assumption of liability accompanies a
 copy of the Program in return for a fee.
 
-            END OF TERMS AND CONDITIONS
+                     END OF TERMS AND CONDITIONS
 
-           How to Apply These Terms to Your New Programs
+            How to Apply These Terms to Your New Programs
 
   If you develop a new program, and you want it to be of the greatest
 possible use to the public, the best way to achieve this is to make it
@@ -625,8 +626,8 @@ free software which everyone can redistribute and change under these terms.
 
   To do so, attach the following notices to the program.  It is safest
 to attach them to the start of each source file to most effectively
-state the exclusion of warranty; and each file should have at least the
-"copyright" line and a pointer to where the full notice is found.
+state the exclusion of warranty; and each file should have at least
+the "copyright" line and a pointer to where the full notice is found.
 
     <one line to give the program's name and a brief idea of what it does.>
     Copyright (C) <year>  <name of author>
@@ -647,24 +648,15 @@ state the exclusion of warranty; and each file should have at least the
 Also add information on how to contact you by electronic and paper mail.
 
   If your software can interact with users remotely through a computer
-network, you should also make sure that it is available at no charge
-to users who interact with it over a network, by offering access to
-the source code from a network server at no charge, as described in
-section 13.
-
-  If the program does terminal interaction, make it output a short
-notice like this when it starts in an interactive mode:
-
-    <program>  Copyright (C) <year>  <name of author>
-    This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'.
-    This is free software, and you are welcome to redistribute it
-    under certain conditions; type `show c' for details.
-
-  The hypothetical commands `show w' and `show c' should show the appropriate
-parts of the General Public License.  Of course, your program's commands
-might be different; for a GUI interface, you would use an "about box".
+network, you should also make sure that it provides a way for users to
+get its source.  For example, if your program is a web application, its
+interface could display a "Source" link that leads users to an archive
+of the code.  There are many ways you could offer source, and different
+solutions will be better for different programs; see section 13 for the
+specific requirements.
 
   You should also get your employer (if you work as a programmer) or school,
 if any, to sign a "copyright disclaimer" for the program, if necessary.
 For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
+
