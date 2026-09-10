@@ -1,0 +1,207 @@
+# MikroTik Cockpit
+
+> A live, browser-based management UI for MikroTik RouterOS — with plain-language explanations, safety warnings, and device direct-links. Think WinBox, but for the 80 % of daily tasks.
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-218%20passing-brightgreen)](#)
+[![RouterOS](https://img.shields.io/badge/RouterOS-7.x-orange)](#)
+
+**Status:** Working prototype — 218 backend tests, security audited, live-verified against RouterOS 7.23.1 on real hardware (MikroTik hAP ac Lite). Not yet a polished commercial product.
+
+**Language:** The interface speaks English and German. It follows your browser language and can be switched any time with the EN/DE button in the header.
+
+---
+
+## Screenshots
+
+*(see SHOW.md for what makes this different)*
+
+| Connect screen | Dashboard | Wi-Fi settings | Security check |
+|---|---|---|---|
+| ![screenshot-connect](screenshots/connect.jpg) | ![screenshot-dashboard](screenshots/dashboard.jpg) | ![screenshot-wifi](screenshots/wifi.jpg) | ![screenshot-security](screenshots/security.jpg) |
+
+*Taken live against a MikroTik hAP ac Lite on an isolated test VLAN — which is why it reports no
+internet and no connected devices. Nothing here is mocked up; only the network names were replaced
+with neutral ones before publishing.*
+
+![demo](screenshots/demo.gif)
+
+---
+
+## Features
+
+### Free tier (open source, AGPL v3)
+
+| Feature | Description |
+|---|---|
+| **Dashboard** | Internet status, uptime, WAN address, connected devices, security score |
+| **DHCP Leases** | Live list of all DHCP clients with manufacturer lookups |
+| **Devices** | Assign rooms, reserve IP addresses, disconnect a Wi-Fi client, open a device's own web UI |
+| **Wi-Fi** | View networks, change SSID and password — with a 5-minute undo window |
+| **Router identity** | Change router name |
+| **Port forwarding** | Add, list, and remove port forwards with conflict detection |
+| **Backup** | Export RouterOS backup, download it, restore it |
+| **Network** | Change IP address, DNS servers, DHCP client mode, WAN interface |
+| **DHCP Ranges** | Add and remove DHCP server ranges per interface |
+| **Security check** | Plain-language audit of services, router access, guest isolation, firmware and backup age |
+
+### Pro tier (Cockpit Pro, coming soon — via GitHub Sponsors)
+
+Not part of this repository. These features live in a separate private repository.
+
+| Feature | Description |
+|---|---|
+| **Firewall** | View, add, enable/disable, delete Forward, Input, and NAT rules |
+| **IP Services** | Toggle ftp/ssh/www/api/winbox on and off |
+| **Router password** | Change the login password — with a 5-minute undo window |
+| **Reboot** | Restart the router |
+| **VPN (WireGuard)** | Add peers, download .conf files |
+| **PPPoE** | Set up WAN connection for DSL |
+| **Guest network** | Control guest SSID and isolation |
+| **Firmware** | Check for and install RouterOS updates |
+
+---
+
+## Quick start
+
+### Prerequisites
+
+- A **Linux desktop** (Windows version: planned after Linux validation)
+- **Python 3.10+** with `pip`
+- **sshpass** — install via your package manager:
+  ```bash
+  # Debian/Ubuntu
+  sudo apt install sshpass python3-pip
+
+  # Fedora
+  sudo dnf install sshpass python3-pip
+
+  # Arch
+  sudo pacman -S sshpass python3-pip
+  ```
+- A MikroTik router with **SSH enabled** (IP → Services → ssh)
+- A user account with **write access** (Group `full`)
+
+### Install
+
+```bash
+# Clone the repo
+git clone https://github.com/BreuerM1975/mikrotik-cockpit.git
+cd mikrotik-cockpit
+
+# Install dependencies into the project-local virtual environment
+./install-cockpit.sh
+
+# Start Cockpit with dependency and port checks
+./start-cockpit.sh
+```
+
+The installer creates a project-local `.venv/`, installs the Python dependencies from
+`app/backend/requirements.txt` and checks the Linux tools needed at startup. It never runs `sudo`
+and never changes your router configuration. Use `./install-cockpit.sh --check` to only verify the
+prerequisites, or `./install-cockpit.sh --start` to install and start in one go. Missing system
+tools are reported with the matching package-manager command for Debian/Ubuntu, Fedora and Arch.
+
+Then open **http://127.0.0.1:8787/** in your browser.
+
+Enter your router's IP address, username, and password — just like WinBox.
+
+### First-time test
+
+Don't have a router handy? You can't easily test Cockpit without one — it connects *live* to your RouterOS device. If you have a MikroTik in your lab or homelab, that's all you need.
+
+---
+
+## Architecture
+
+```
+Your browser (localhost)
+    │  fetch to http://127.0.0.1:8787
+    ▼
+Cockpit Backend (Flask, runs locally)
+    │  SSH to your router
+    ▼
+Your MikroTik Router (RouterOS)
+```
+
+- **Backend:** Python/Flask, binds only to `127.0.0.1` (not accessible from LAN)
+- **Communication:** SSH to RouterOS — no REST API dependency (port 80/443 is often firewalled on MikroTik devices)
+- **No database, no cloud, no accounts** — session lives in memory only
+- **No fixed router configuration** — enter credentials each session, just like WinBox
+
+---
+
+## Comparison: Cockpit vs. WinBox
+
+| | WinBox | Cockpit |
+|---|---|---|
+| **Platform** | Windows only (Wine on Linux) | Cross-platform (Python) |
+| **Learning curve** | Steep — shows every RouterOS knob | Gentle — explains each setting |
+| **Safety warnings** | None | SSH warning, IP-change warning, reboot confirmation, managed-rule protection |
+| **Device links** | None | OUI-based direct links to web UIs (Shelly, ESPHome, etc.) |
+| **Cloud/account** | None | None — fully local |
+| **Deep RouterOS features** | All of them | Daily 80 % — VLANs, BGP etc. still need WinBox |
+| **Installation** | Download .exe | `./install-cockpit.sh` + `./start-cockpit.sh` |
+
+---
+
+## Security
+
+- **Local only** — backend binds to `127.0.0.1` (not accessible from the LAN)
+- **No stored credentials** — passwords live in memory, gone when you close the session
+- **No cloud dependency** — no account, no telemetry, no central server
+- **Audit completed** — 18 findings, P0 and P1 closed. See `SHOW.md` for details
+- **SSH is your only connection** — do NOT disable SSH on your router (IP → Services) unless you have WinBox access as a fallback
+
+---
+
+## How is this different from...?
+
+| Tool | Difference |
+|---|---|
+| **WebFig** | RouterOS built-in, but just as complex as WinBox — no explanations, no device links |
+| **MikroWizard** | Separate project, different focus (wizard-based setup) |
+| **MikroMCP / MikroTik MCP** | AI/LLM integration APIs, not a user-facing management UI |
+| **Config Generator (SchnellPortal)** | Offline config builder — generates .rsc files, no live connection |
+
+---
+
+## License
+
+**AGPL v3** for the free tier (open-source features listed above).
+
+For commercial use, integration into proprietary products (e.g., RouterOS itself), or extended features — contact us for a commercial license. This follows the same model as MySQL, GitLab, Redis, and Nginx: the community gets a powerful free tool, enterprises pay for rights the AGPL doesn't grant.
+
+See [`LICENSE`](LICENSE) for the full license text.
+
+---
+
+## Development
+
+Run the tests:
+
+```bash
+# Backend tests
+python3 -m unittest discover -s app/backend/src -q
+
+# Language check: verifies every backend message has an English translation
+python3 app/frontend/test-language-static.py
+```
+
+Current test count: **218 backend tests**, all green. They mock the router, so no hardware is
+needed.
+
+The interface is written in German and translated at the DOM level: `i18n.js` looks each string up
+in `dict-en.js`, falls back to the patterns in `patterns-en.js` for sentences that carry values,
+and finally to `substitutions-en.js` for strings assembled from parts. After changing any
+user-facing text, run the language check above.
+
+**A note on the code itself:** comments and the backend's own error messages are in German. The
+messages reach users only through the interface, where they are translated; anyone calling the API
+directly will see German text. Pull requests in either language are welcome.
+
+---
+
+## Disclaimer
+
+MikroTik is a registered trademark of MikroTikls SIA. This project is not affiliated with, endorsed by, or sponsored by MikroTik. Use at your own risk — configuration changes are applied immediately, no Safe Mode available.
