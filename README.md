@@ -26,6 +26,8 @@ with neutral ones before publishing.*
 
 ![demo](screenshots/demo.gif)
 
+60-second walkthrough on YouTube (German voice-over, English UI available in the app): https://www.youtube.com/watch?v=eTpmH4RkWiM
+
 ---
 
 ## Features
