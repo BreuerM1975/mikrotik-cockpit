@@ -45,9 +45,14 @@ with neutral ones before publishing.*
 | **DHCP Ranges** | Add and remove DHCP server ranges per interface |
 | **Security check** | Plain-language audit of services, router access, guest isolation, firmware and backup age |
 
-### Pro tier (Cockpit Pro, coming soon — via GitHub Sponsors)
+### Pro tier (Cockpit Pro, via GitHub Sponsors)
 
-Not part of this repository. These features live in a separate private repository.
+Not part of this repository. These features live in a private repository that sponsors get
+access to: **[Sponsor on GitHub](https://github.com/sponsors/BreuerM1975)**, $5/month (access
+for as long as you sponsor, updates included) or $49 one-time (you keep what you download).
+GitHub sends the repository invitation automatically for monthly sponsors; one-time sponsors
+are added by hand, usually within a day. Install is one script (`install-pro.sh`) that copies
+four files into this checkout and can remove them again.
 
 | Feature | Description |
 |---|---|
