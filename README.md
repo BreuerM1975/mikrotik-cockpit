@@ -169,7 +169,7 @@ Your MikroTik Router (RouterOS)
 | **WebFig** | RouterOS built-in, but just as complex as WinBox — no explanations, no device links |
 | **MikroWizard** | Separate project, different focus (wizard-based setup) |
 | **MikroMCP / MikroTik MCP** | AI/LLM integration APIs, not a user-facing management UI |
-| **Config Generator (SchnellPortal)** | Offline config builder — generates .rsc files, no live connection |
+| **[MikroTik Config Generator](https://mikrotik.smarthomeblox.com)** (same author) | Offline config builder — generates .rsc files from a form, no live connection. Cockpit is what you use *after* the router runs |
 
 ---
 
@@ -206,6 +206,14 @@ user-facing text, run the language check above.
 **A note on the code itself:** comments and the backend's own error messages are in German. The
 messages reach users only through the interface, where they are translated; anyone calling the API
 directly will see German text. Pull requests in either language are welcome.
+
+---
+
+## From the same author
+
+- **Das deutsche MikroTik Kompendium** (German, paperback/hardcover/Kindle): https://www.amazon.de/dp/B0H4BR6KJR — the book explains what every line of a RouterOS config does; Cockpit is the tool for the day after you have read it.
+- **MikroTik Config Generator + Config Doctor**: https://mikrotik.smarthomeblox.com — builds a secure base configuration from a form, and checks your own `/export` for common mistakes.
+- **RouterOS Blaupause** (YouTube, German): https://www.youtube.com/@routerosblaupause — walkthroughs of the topics above, including the Cockpit videos.
 
 ---
 
