@@ -211,7 +211,8 @@ directly will see German text. Pull requests in either language are welcome.
 
 ## From the same author
 
-- **Das deutsche MikroTik Kompendium** (German, paperback/hardcover/Kindle): https://www.amazon.de/dp/B0H4BR6KJR — the book explains what every line of a RouterOS config does; Cockpit is the tool for the day after you have read it.
+- **Mastering MikroTik RouterOS** (English, paperback/hardcover/Kindle): https://www.amazon.com/dp/B0HJYVSF2X — the book explains what every line of a RouterOS config does; Cockpit is the tool for the day after you have read it.
+- **Das deutsche MikroTik Kompendium** (German edition of the same book): https://www.amazon.de/dp/B0H4BR6KJR
 - **MikroTik Config Generator + Config Doctor**: https://mikrotik.smarthomeblox.com — builds a secure base configuration from a form, and checks your own `/export` for common mistakes.
 - **RouterOS Blaupause** (YouTube, German): https://www.youtube.com/@routerosblaupause — walkthroughs of the topics above, including the Cockpit videos.
 
