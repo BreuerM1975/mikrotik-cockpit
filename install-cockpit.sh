@@ -14,13 +14,48 @@ usage() {
 Usage: ./install-cockpit.sh [OPTION]
 
 Options:
-  --check   Only verify the installation and the external runtime tools
-  --start   Install/update dependencies and start Cockpit
-  --help    Show this help
+  --check        Only verify the installation and the external runtime tools
+  --start        Install/update dependencies and start Cockpit
+  --remove-menu  Remove the "MikroTik Cockpit" application menu entry again
+  --help         Show this help
 
 Without an option the local Python virtual environment is created or
-updated, but the service is not started.
+updated and a "MikroTik Cockpit" menu entry is created for the current
+user, but the service is not started.
 EOF
+}
+
+# Application menu entry for the current user only (no sudo): a .desktop file that calls the
+# starter. Cockpit then starts with one click from the menu, no terminal needed.
+menu_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+menu_file="$menu_dir/mikrotik-cockpit.desktop"
+
+install_menu_entry() {
+  mkdir -p "$menu_dir"
+  cat > "$menu_file" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=MikroTik Cockpit
+Comment=Local web UI for MikroTik RouterOS
+Exec="$script_dir/start-cockpit.sh"
+Icon=$script_dir/assets/cockpit-icon.svg
+Terminal=false
+Categories=Network;
+Keywords=MikroTik;RouterOS;Router;
+DESKTOP
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$menu_dir" >/dev/null 2>&1 || true
+  fi
+  echo "Menu entry created: $menu_file"
+}
+
+remove_menu_entry() {
+  if [[ -f "$menu_file" ]]; then
+    rm -f "$menu_file"
+    echo "Menu entry removed: $menu_file"
+  else
+    echo "No menu entry present: $menu_file"
+  fi
 }
 
 mode="install"
@@ -28,6 +63,7 @@ case "${1:-}" in
   "") ;;
   --check) mode="check" ;;
   --start) mode="start" ;;
+  --remove-menu) remove_menu_entry; exit 0 ;;
   --help|-h) usage; exit 0 ;;
   *) echo "Error: unknown option: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -104,8 +140,15 @@ done
 
 echo "Cockpit installation verified: $venv_dir"
 if [[ "$mode" == "check" ]]; then
+  if [[ -f "$menu_file" ]]; then
+    echo "Menu entry present: $menu_file"
+  else
+    echo "Note: no menu entry yet; ./install-cockpit.sh without options creates it."
+  fi
   exit 0
 fi
+
+install_menu_entry
 
 if [[ "$mode" == "start" ]]; then
   exec "$script_dir/start-cockpit.sh"

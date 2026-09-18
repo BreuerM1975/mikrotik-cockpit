@@ -10,6 +10,16 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$script_dir"
+
+# Started from the application menu there is no terminal; an error must then show up as a
+# desktop notification, otherwise nothing seems to happen for the user.
+fail() {
+  echo "$1" >&2
+  if [[ ! -t 2 ]] && command -v notify-send >/dev/null 2>&1; then
+    notify-send --app-name="MikroTik Cockpit" "MikroTik Cockpit" "$1" >/dev/null 2>&1 || true
+  fi
+  exit 1
+}
 app_path="$project_dir/app/backend/src/app.py"
 python_bin="$project_dir/.venv/bin/python"
 if [[ ! -x "$python_bin" ]]; then
@@ -17,8 +27,7 @@ if [[ ! -x "$python_bin" ]]; then
 fi
 
 if [[ ! -f "$app_path" ]]; then
-  echo "Error: $app_path not found -- this script is not in the project folder." >&2
-  exit 1
+  fail "Error: $app_path not found -- this script is not in the project folder."
 fi
 
 missing=()
@@ -28,14 +37,10 @@ for command in python3 curl sshpass ssh ssh-keyscan ssh-keygen fuser ps grep; do
   fi
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
-  echo "Error: missing required tools: ${missing[*]}." >&2
-  echo "Install the missing Linux packages and start Cockpit again." >&2
-  exit 1
+  fail "Error: missing required tools: ${missing[*]}. Install the missing Linux packages and start Cockpit again."
 fi
 if ! "$python_bin" -c 'import flask' >/dev/null 2>&1; then
-  echo "Error: the Python module Flask is missing." >&2
-  echo "Install the dependencies with: $project_dir/install-cockpit.sh" >&2
-  exit 1
+  fail "Error: the Python module Flask is missing. Install the dependencies with: $project_dir/install-cockpit.sh"
 fi
 
 for optional_command in scp wg xdg-open; do
@@ -54,10 +59,18 @@ if [[ -n "$existing_pids" ]]; then
   for existing_pid in "${pid_list[@]}"; do
     process_args="$(ps -p "$existing_pid" -o args= 2>/dev/null || true)"
     if [[ "$process_args" == *"app/backend/src/app.py"* ]]; then
+      # If Cockpit is already running and answering, just open the browser (second click in the
+      # menu) instead of restarting the service and losing the logged-in session.
+      if curl -fsS --max-time 1 http://127.0.0.1:8787/ >/dev/null 2>&1; then
+        echo "Cockpit is already running at: http://127.0.0.1:8787/"
+        if command -v xdg-open >/dev/null 2>&1; then
+          xdg-open "http://127.0.0.1:8787/" >/dev/null 2>&1 &
+        fi
+        exit 0
+      fi
       kill "$existing_pid" 2>/dev/null || true
     else
-      echo "Error: port 8787 is held by an unrelated process (PID $existing_pid), aborting." >&2
-      exit 1
+      fail "Error: port 8787 is held by an unrelated process (PID $existing_pid), aborting."
     fi
   done
   sleep 0.3
@@ -76,8 +89,7 @@ for attempt in {1..20}; do
   sleep 0.2
 done
 if [[ -z "$ready" ]]; then
-  echo "Error: the backend did not answer within 4 seconds, not opening the browser." >&2
-  exit 1
+  fail "Error: the backend did not answer within 4 seconds, not opening the browser."
 fi
 
 if command -v xdg-open >/dev/null 2>&1; then

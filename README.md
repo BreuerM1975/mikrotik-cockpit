@@ -104,12 +104,18 @@ cd mikrotik-cockpit
 ```
 
 The installer creates a project-local `.venv/`, installs the Python dependencies from
-`app/backend/requirements.txt` and checks the Linux tools needed at startup. It never runs `sudo`
-and never changes your router configuration. Use `./install-cockpit.sh --check` to only verify the
-prerequisites, or `./install-cockpit.sh --start` to install and start in one go. Missing system
-tools are reported with the matching package-manager command for Debian/Ubuntu, Fedora and Arch.
+`app/backend/requirements.txt`, checks the Linux tools needed at startup and adds a
+**"MikroTik Cockpit" entry to your application menu** (a `.desktop` file in
+`~/.local/share/applications/`, for your user only). It never runs `sudo` and never changes your
+router configuration. Use `./install-cockpit.sh --check` to only verify the prerequisites,
+`./install-cockpit.sh --start` to install and start in one go, or `./install-cockpit.sh --remove-menu`
+to take the menu entry away again. Missing system tools are reported with the matching
+package-manager command for Debian/Ubuntu, Fedora and Arch.
 
-Then open **http://127.0.0.1:8787/** in your browser.
+From then on, start Cockpit from the application menu like any other program: it launches the
+service and opens **http://127.0.0.1:8787/** in your browser. A second click while it is running
+just opens the browser again. If a start fails without a terminal, the error shows up as a desktop
+notification.
 
 Enter your router's IP address, username, and password — just like WinBox.
 
@@ -148,7 +154,7 @@ Your MikroTik Router (RouterOS)
 | **Device links** | None | OUI-based direct links to web UIs (Shelly, ESPHome, etc.) |
 | **Cloud/account** | None | None — fully local |
 | **Deep RouterOS features** | All of them | Daily 80 % — VLANs, BGP etc. still need WinBox |
-| **Installation** | Download .exe | `./install-cockpit.sh` + `./start-cockpit.sh` |
+| **Installation** | Download .exe | `./install-cockpit.sh`, then a menu entry |
 
 ---
 
