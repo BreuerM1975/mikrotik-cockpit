@@ -113,7 +113,7 @@
 .service-list { display:grid; gap:0; }
 .service-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 0; border-top:1px solid #edf0f3; }
 .service-row:first-child { border-top:0; }
-.service-row strong { color:#36445a; font-size:13px; }
+.service-row strong { color:var(--ink); font-size:13px; }
 .service-row .muted { margin:3px 0 0; }
 .service-row.is-disabled { opacity:.65; }
 .service-toggle { flex:0 0 auto; border:1px solid #cbd8f3; border-radius:7px; padding:8px 12px; color:#4166b5; background:#f6f8ff; font-size:11px; font-weight:700; }
@@ -136,7 +136,7 @@
 .firewall-list { display:grid; gap:8px; max-height:560px; overflow:auto; margin-top:14px; }
 .firewall-rule { padding:11px 0; border-top:1px solid #edf0f3; }
 .firewall-rule.is-disabled { opacity:.65; }
-.firewall-rule-head { display:flex; align-items:center; flex-wrap:wrap; gap:6px; color:#36445a; font-size:12px; }
+.firewall-rule-head { display:flex; align-items:center; flex-wrap:wrap; gap:6px; color:var(--ink); font-size:12px; }
 .firewall-order { color:#98a3b1; font-family:ui-monospace,monospace; font-size:10px; }
 .firewall-rule-meta,.firewall-rule-comment { margin:4px 0 0; color:#718096; font-size:10px; line-height:1.45; overflow-wrap:anywhere; }
 .firewall-rule-comment { color:#4f5d71; }
