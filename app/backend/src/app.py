@@ -33,6 +33,10 @@ except ImportError:
 
 app = Flask(__name__)
 cfg = core.cfg
+# Kennung dieses Prozesses (Startzeit). Das Frontend merkt sich den ersten Wert und laedt die
+# Seite neu, sobald er sich aendert -- so arbeitet nach einem Update (start-cockpit.sh startet
+# den Dienst neu) nie eine alte Oberflaeche gegen ein neues Backend weiter.
+BUILD_ID = str(int(time.time()))
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend"))
 
 
@@ -119,6 +123,8 @@ def add_cors_headers(response):
     # ist gueltig, der alte Header-Name gehoert hier nicht mehr rein.
     response.headers["Access-Control-Allow-Headers"] = "X-Cockpit-Session, Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Expose-Headers"] = "X-Cockpit-Build"
+    response.headers["X-Cockpit-Build"] = BUILD_ID
     return response
 
 

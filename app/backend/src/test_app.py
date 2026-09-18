@@ -2308,3 +2308,14 @@ class ApiTest(unittest.TestCase):
         add_index = next(i for i, c in enumerate(calls) if c.startswith("/ip dhcp-server lease add"))
         remove_index = next(i for i, c in enumerate(calls) if c.startswith("/ip dhcp-server lease remove"))
         self.assertLess(add_index, remove_index, "Anlegen muss vor dem Entfernen der alten Lease passieren")
+
+
+class BuildHeaderTest(unittest.TestCase):
+    def test_every_response_carries_build_id(self):
+        app_module.app.testing = True
+        client = app_module.app.test_client()
+        for resp in (client.get("/"), client.get("/api/v1/status")):
+            self.assertEqual(resp.headers.get("X-Cockpit-Build"), app_module.BUILD_ID)
+            self.assertIn("X-Cockpit-Build", resp.headers.get("Access-Control-Expose-Headers", ""))
+        self.assertTrue(app_module.BUILD_ID.isdigit())
+

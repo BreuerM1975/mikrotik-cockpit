@@ -4,6 +4,7 @@ const state = { wifi: [], devices: [], forwards: [], backups: [], peers: [], vpn
 
 const $ = (selector) => document.querySelector(selector);
 let proModulePromise = null;
+let backendBuild = null;
 
 // Pro ist absichtlich kein Teil der Basis-Auslieferung. Erst ein Pro-Backend darf das
 // optionale Modul anfordern; ein öffentlicher Basis-Checkout enthält diese Datei nicht.
@@ -214,6 +215,10 @@ async function request(path, options = {}, withSession = true) {
   const headers = { ...(withSession && state.session ? { "X-Cockpit-Session": state.session } : {}), ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
   let response;
   try { response = await fetch(`${API_BASE}${path}`, { signal: AbortSignal.timeout(60000), ...options, headers }); } catch (error) { throw new Error(error.name === "TimeoutError" ? "Zeitüberschreitung beim Backend. Ergebnis unbekannt; vor Wiederholung aktualisieren." : `Backend nicht erreichbar unter ${API_BASE}`); }
+  // Backend neu gestartet (Update ueber start-cockpit.sh): die geladene Oberflaeche passt dann
+  // nicht mehr zum Backend, deshalb einmal komplett neu laden statt mit altem Code weiterzumachen.
+  const build = response.headers.get("X-Cockpit-Build");
+  if (build) { if (backendBuild && backendBuild !== build) { window.location.reload(); throw new Error("Cockpit wurde aktualisiert, die Seite wird neu geladen."); } backendBuild = build; }
   if (withSession && session !== state.session) throw new Error("Antwort einer beendeten Sitzung verworfen.");
   if (response.ok) return response.status === 204 ? null : response.json();
   let detail = null;

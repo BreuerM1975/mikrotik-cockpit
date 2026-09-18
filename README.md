@@ -115,7 +115,8 @@ package-manager command for Debian/Ubuntu, Fedora and Arch.
 
 From then on, start Cockpit from the application menu like any other program: it launches the
 service and opens **http://127.0.0.1:8787/** in your browser. A second click while it is running
-just opens the browser again. If a start fails without a terminal, the error shows up as a desktop
+just opens the browser again, unless you updated Cockpit in between (`git pull`): then the click
+restarts the service so the update takes effect, an open tab reloads itself, and you connect once more. If a start fails without a terminal, the error shows up as a desktop
 notification.
 
 Enter your router's IP address, username, and password — just like WinBox.

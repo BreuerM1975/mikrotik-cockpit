@@ -898,4 +898,5 @@ window.COCKPIT_DICT_EN = {
   "admin ist noch aktiv, obwohl ein eigener Vollzugang existiert.": "admin is still active although your own full-access user exists.",
   "Ein eigener Vollzugang existiert bereits, admin ist aber noch aktiv. Schalte admin ab (in Cockpit Pro unter Benutzer, sonst in WinBox unter System > Users), sobald du dich mit dem eigenen Zugang einmal angemeldet hast.":
     "Your own full-access user already exists, but admin is still active. Switch admin off (in Cockpit Pro under Users, otherwise in WinBox under System > Users) once you have logged in with your own account.",
+  "Cockpit wurde aktualisiert, die Seite wird neu geladen.": "Cockpit was updated, reloading the page.",
 };

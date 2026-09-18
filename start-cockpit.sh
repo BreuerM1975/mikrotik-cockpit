@@ -60,13 +60,24 @@ if [[ -n "$existing_pids" ]]; then
     process_args="$(ps -p "$existing_pid" -o args= 2>/dev/null || true)"
     if [[ "$process_args" == *"app/backend/src/app.py"* ]]; then
       # If Cockpit is already running and answering, just open the browser (second click in the
-      # menu) instead of restarting the service and losing the logged-in session.
+      # menu) instead of restarting the service and losing the logged-in session -- UNLESS the
+      # code on disk is newer than the running process (git pull, install-pro.sh): then this click
+      # is the user's only way to apply the update, so the service is restarted.
       if curl -fsS --max-time 1 http://127.0.0.1:8787/ >/dev/null 2>&1; then
-        echo "Cockpit is already running at: http://127.0.0.1:8787/"
-        if command -v xdg-open >/dev/null 2>&1; then
-          xdg-open "http://127.0.0.1:8787/" >/dev/null 2>&1 &
+        process_age="$(ps -p "$existing_pid" -o etimes= 2>/dev/null | tr -d ' ' || true)"
+        started_at="$(( $(date +%s) - ${process_age:-0} ))"
+        updated_files="$(find "$project_dir/app" -type f -newermt "@$started_at" ! -path '*/__pycache__/*' 2>/dev/null | head -1 || true)"
+        if [[ -z "$updated_files" ]]; then
+          echo "Cockpit is already running at: http://127.0.0.1:8787/"
+          if command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "http://127.0.0.1:8787/" >/dev/null 2>&1 &
+          fi
+          exit 0
         fi
-        exit 0
+        echo "Cockpit was updated, restarting the service."
+        if [[ ! -t 2 ]] && command -v notify-send >/dev/null 2>&1; then
+          notify-send --app-name="MikroTik Cockpit" "MikroTik Cockpit" "Update detected, Cockpit is restarting. Please connect again." >/dev/null 2>&1 || true
+        fi
       fi
       kill "$existing_pid" 2>/dev/null || true
     else
