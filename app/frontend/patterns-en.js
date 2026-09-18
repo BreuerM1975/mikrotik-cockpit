@@ -3,6 +3,9 @@
 // Ein exakter Woerterbuch-Treffer scheitert hier, weil im DOM z.B. "Zuletzt geprueft: 18:42" steht.
 // Reihenfolge zaehlt: das erste passende Muster gewinnt, deshalb stehen spezielle Faelle oben.
 
+const USER_VERBS_EN = { deaktivieren: "disable", "löschen": "delete", herabstufen: "downgrade" };
+const USER_VERBS_EN_PAST = { deaktivieren: "disabled", "löschen": "deleted", herabstufen: "downgraded" };
+
 window.COCKPIT_PATTERNS_EN = [
   [/^Zuletzt geprüft: (.+)$/, "Last checked: $1"],
   [/^(\d+) von (\d+) Prüfungen bestanden$/, "$1 of $2 checks passed"],
@@ -46,4 +49,30 @@ window.COCKPIT_PATTERNS_EN = [
   [/^Neue SSID für (.+)$/, "New SSID for $1"],
   [/^Neues Passwort für (.+)$/, "New password for $1"],
   [/^RouterOS (.+)$/, "RouterOS $1"],
+  // Benutzerverwaltung (Pro): Namen und Aktionen werden zur Laufzeit eingesetzt. Bei den drei
+  // Sperrmeldungen ersetzt eine Funktion das deutsche Verb, weil ein "$1" es unuebersetzt liesse
+  // (unbekanntes Verb bleibt stehen, damit die statische Pruefung mit Platzhaltern greift).
+  [/^Eigene Gruppe: (.+)$/, "Custom group: $1"],
+  [/^Zuletzt angemeldet (.+)$/, "Last login $1"],
+  [/^Nur von (.+)$/, "Only from $1"],
+  [/^Rechte von (.+)$/, "Rights of $1"],
+  [/^Benutzer (.+) wurde angelegt\.$/, "User $1 was created."],
+  [/^Benutzer (.+) gibt es schon$/, "User $1 already exists"],
+  [/^Passwort für (.+) wurde gesetzt\.$/, "Password for $1 was set."],
+  [/^Rechte von (.+) wurden geändert\.$/, "Rights of $1 were changed."],
+  [/^(.+) verliert damit den Vollzugriff und kann keine Benutzer mehr verwalten\.$/, "$1 loses full access and can no longer manage users."],
+  [/^(.+) kann sich danach nicht mehr am Router anmelden\. Der Zugang bleibt gespeichert und lässt sich wieder aktivieren\.$/,
+    "$1 will no longer be able to log in to the router. The account stays saved and can be re-enabled."],
+  [/^Der Benutzer (.+) wird endgültig vom Router entfernt\. Zum Sperren reicht auch Deaktivieren\.$/,
+    "User $1 will be permanently removed from the router. Disabling is enough to block access."],
+  [/^(.+) wurde aktiviert\.$/, "$1 was enabled."],
+  [/^(.+) wurde deaktiviert\.$/, "$1 was disabled."],
+  [/^(.+) wurde gelöscht\.$/, "$1 was deleted."],
+  [/^Die Gruppe (.+) ist eine eigene Gruppe, Cockpit ändert sie nicht\.$/, "The group $1 is a custom group; Cockpit does not change it."],
+  [/^Der angemeldete Benutzer kann sich nicht selbst (.+?)\.$/,
+    (_match, verb) => `The logged-in user cannot ${USER_VERBS_EN[verb] || verb} itself.`],
+  [/^(.+) ist der letzte aktive Benutzer mit vollen Rechten und lässt sich nicht (.+?)\. Lege zuerst einen weiteren an\.$/,
+    (_match, name, verb) => `${name} is the last active full-access user and cannot be ${USER_VERBS_EN_PAST[verb] || verb}. Create another one first.`],
+  [/^Der andere Benutzer mit vollen Rechten war noch nie angemeldet\. Melde dich erst einmal mit ihm an, damit das Passwort nachweislich stimmt, dann lässt sich (.+) (.+?)\.$/,
+    (_match, name, verb) => `The other full-access user has never logged in. Log in with it once first, so the password is proven to work, then ${name} can be ${USER_VERBS_EN_PAST[verb] || verb}.`],
 ];

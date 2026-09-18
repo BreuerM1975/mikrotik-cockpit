@@ -22,6 +22,14 @@ from routeros import (
 
 FAKE_OUTPUT = {
     "/system identity print": '  name: L009\n',
+    # Benutzer: admin aktiv und einziger Vollzugang (Standardzustand ab Werk), dazu ein
+    # write-Benutzer. Echtes Format von RouterOS 7.23 (live 18.09.): disabled nur als Flag X,
+    # last-logged-in fehlt bei nie angemeldeten Benutzern.
+    "/user print terse": (
+        ' 0   comment=system default user name=admin group=full inactivity-timeout=10m '
+        'inactivity-policy=none address= last-logged-in=2026-09-17 21:04:11\n'
+        ' 1   name=hilfe group=write inactivity-timeout=10m inactivity-policy=none address=\n'
+    ),
     "/system resource print": '  version: 7.22.2 (stable)\n  uptime: 12d3h4m5s\n',
     '/interface print terse where name="ether1"': ' 0  name="ether1" running=true\n',
     '/ip address print terse where interface="ether1"': ' 0  address="203.0.113.7/24" interface="ether1"\n',
@@ -1289,6 +1297,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(by_id["firmware"]["status"], "warn")
         self.assertEqual(by_id["guest_isolation"]["status"], "unknown")
         self.assertEqual(by_id["backup"]["status"], "warn")
+        self.assertEqual(by_id["default_user"]["status"], "warn")
+        self.assertIn("einzige Vollzugang", by_id["default_user"]["detail"])
         self.assertEqual(data["score"], 0)
         # Alltagssprache-Feld (Punkt 5 des Sieben-Punkte-Urteils, 10.09.2026): jeder Check
         # bekommt zusaetzlich zum Fachtext "detail" ein "plain"-Feld. "Kein falsches Gruen":
@@ -1300,6 +1310,7 @@ class ApiTest(unittest.TestCase):
         self.assertIn("Schalte", by_id["services"]["plain"])
         self.assertIn("Lege", by_id["input_firewall"]["plain"])
         self.assertIn("Erstelle", by_id["backup"]["plain"])
+        self.assertIn("Lege", by_id["default_user"]["plain"])
         self.assertNotIn("ist sicher", by_id["guest_isolation"]["plain"].lower())
         self.assertIn("nicht geprüft", by_id["guest_isolation"]["plain"])
 
@@ -1329,6 +1340,13 @@ class ApiTest(unittest.TestCase):
                 return ""
             if command == "/system package update print":
                 return "  installed-version: 7.24.1\n  latest-version: 7.24.1\n"
+            if command == "/user print terse":
+                return (
+                    " 0 X comment=system default user name=admin group=full inactivity-timeout=10m "
+                    "inactivity-policy=none address=\n"
+                    " 1   name=marco group=full inactivity-timeout=10m inactivity-policy=none address= "
+                    "last-logged-in=2026-09-18 06:10:00\n"
+                )
             return fake_router(command)
 
         with patch("core.router", side_effect=good_router):
@@ -1342,6 +1360,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(by_id["input_firewall"]["status"], "good")
         self.assertEqual(by_id["firmware"]["status"], "good")
         self.assertEqual(by_id["backup"]["status"], "good")
+        self.assertEqual(by_id["default_user"]["status"], "good")
         self.assertEqual(by_id["guest_isolation"]["status"], "unknown")
         self.assertEqual(data["score"], 100)
         for check in data["checks"]:
@@ -1350,6 +1369,46 @@ class ApiTest(unittest.TestCase):
         # Auch bei durchweg gruenem Ergebnis darf "guest_isolation" (hier unknown, weil kein
         # Gastnetz-Interface gewaehlt ist) nicht wie eine Bestaetigung klingen.
         self.assertNotIn("ist sicher", by_id["guest_isolation"]["plain"].lower())
+
+    def test_security_check_default_user_admin_active_beside_own_full_user_warns(self):
+        session_id = "security-check-admin-beside-session"
+        core_module.SESSIONS[session_id] = {
+            "host": "secheck-admin-beside-host", "user": "marco", "password": "x", "ssh_port": 22,
+        }
+
+        def both_active(command):
+            if command == "/user print terse":
+                return (
+                    " 0   comment=system default user name=admin group=full inactivity-timeout=10m "
+                    "inactivity-policy=none address=\n"
+                    " 1   name=marco group=full inactivity-timeout=10m inactivity-policy=none address= "
+                    "last-logged-in=2026-09-18 06:10:00\n"
+                )
+            return fake_router(command)
+
+        with patch("core.router", side_effect=both_active):
+            resp = self.client.get("/api/v1/security-check", headers={"X-Cockpit-Session": session_id})
+        by_id = {c["id"]: c for c in resp.get_json()["checks"]}
+        self.assertEqual(by_id["default_user"]["status"], "warn")
+        self.assertIn("noch aktiv", by_id["default_user"]["detail"])
+        self.assertIn("Schalte admin", by_id["default_user"]["plain"])
+
+    def test_security_check_default_user_unknown_when_users_unreadable(self):
+        session_id = "security-check-users-unknown-session"
+        core_module.SESSIONS[session_id] = {
+            "host": "secheck-users-unknown-host", "user": "admin", "password": "x", "ssh_port": 22,
+        }
+
+        def failing_users(command):
+            if command == "/user print terse":
+                raise RouterCommandFailed("not enough permissions (9)")
+            return fake_router(command)
+
+        with patch("core.router", side_effect=failing_users):
+            resp = self.client.get("/api/v1/security-check", headers={"X-Cockpit-Session": session_id})
+        by_id = {c["id"]: c for c in resp.get_json()["checks"]}
+        self.assertEqual(by_id["default_user"]["status"], "unknown")
+        self.assertNotIn("ist sicher", by_id["default_user"]["plain"].lower())
 
     def test_security_check_input_firewall_drop_invalid_only_is_not_good(self):
         # Audit Runde 5, Befund 1: die RouterOS-Standardregel "drop invalid" (nur
@@ -1914,6 +1973,21 @@ class ApiTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.get_json()["error"], "invalid_password")
+        mock_router.assert_not_called()
+
+    @patch("core.router", side_effect=fake_router)
+    def test_wifi_password_rejects_non_ascii(self, mock_router):
+        # 18.09.2026, live am hAP: RouterOS verwirft Umlaute per SSH still. Der Router haette
+        # dann eine andere Passphrase als der Nutzer glaubt; WPA-Passphrasen sind ohnehin nur als
+        # druckbares ASCII definiert.
+        resp = self.client.put(
+            "/api/v1/wifi/wlan-haupt/password",
+            json={"new_password": "Familie-Müller-2026"},
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.get_json()["error"], "invalid_password")
+        self.assertIn("Umlaute", resp.get_json()["message"])
         mock_router.assert_not_called()
 
     @patch("core.router", side_effect=fake_router)

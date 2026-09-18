@@ -34,6 +34,7 @@ Cockpit is honest about what it can and cannot protect you from:
 - **SSH is your only connection?** Disabling it in the IP Services panel triggers an extra warning: *"This will cut Cockpit's own connection. Make sure you have another way in (WinBox, console)."* *(Pro)*
 - **Firewall rules marked `defconf`?** Deleting a RouterOS system rule shows a stronger warning than deleting a user-created one. *(Pro)*
 - **Rebooting the router?** Confirmation required, with a note that it takes ~30 seconds to come back. *(Pro)*
+- **Disabling `admin` before your own login ever worked?** Refused. Cockpit only lets the default user go once another full-access user has actually logged in. Same for deleting your own account or the last full-access user. *(Pro)*
 
 WinBox warns about none of these things.
 

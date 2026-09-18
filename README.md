@@ -60,6 +60,7 @@ four files into this checkout and can remove them again.
 |---|---|
 | **Firewall** | View, add, enable/disable, delete Forward, Input, and NAT rules |
 | **IP Services** | Toggle ftp/ssh/www/api/winbox on and off |
+| **Users** | Create your own login, set read-only accounts for the family, disable `admin` — with lock-out protection built in |
 | **Router password** | Change the login password — with a 5-minute undo window |
 | **Reboot** | Restart the router |
 | **VPN (WireGuard)** | Add peers, download .conf files |

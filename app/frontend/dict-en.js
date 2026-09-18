@@ -832,4 +832,70 @@ window.COCKPIT_DICT_EN = {
   "RouterOS-Systemregel": "RouterOS system rule",
   "Der Router meldet derzeit keine aktive Verbindung zum Internet.":
     "The router currently reports no active connection to the internet.",
+  // --- Benutzerverwaltung (Pro, 18.09.2026) und Sicherheits-Check "Standardbenutzer admin" ---
+  "Benutzer": "Users",
+  "Standardbenutzer admin": "Default user admin",
+  "MikroTik empfiehlt als ersten Schritt einen eigenen Benutzer.": "MikroTik recommends creating your own user as the first step.",
+  "Lege einen Benutzer mit vollen Rechten an, melde dich einmal damit an und schalte danach": "Create a user with full rights, log in with it once, then switch off",
+  "ab. Cockpit verhindert, dass du dich selbst aussperrst: Der angemeldete Benutzer und der letzte Vollzugang lassen sich weder deaktivieren noch löschen oder herabstufen.":
+    ". Cockpit stops you locking yourself out: the logged-in user and the last full-access user cannot be disabled, deleted or downgraded.",
+  "Benutzer anlegen": "Create user",
+  "Vollzugriff, Ändern oder nur Lesen": "Full access, change or read only",
+  "Benutzername": "Username",
+  "z. B. marco": "e.g. marco",
+  "Rechte": "Rights",
+  "Vollzugriff (full)": "Full access (full)",
+  "Ändern ohne Benutzerverwaltung (write)": "Change settings, no user management (write)",
+  "Nur lesen (read)": "Read only (read)",
+  "Nur Buchstaben, Ziffern und Sonderzeichen ohne Umlaute, keine Anführungszeichen. RouterOS verwirft Umlaute per SSH stillschweigend.":
+    "Letters, digits and ASCII symbols only, no quotation marks. RouterOS silently drops non-ASCII characters over SSH.",
+  "Keine Benutzer gefunden.": "No users found.",
+  "Ändern": "Change",
+  "Nur lesen": "Read only",
+  "Noch nie angemeldet": "Never logged in",
+  "Du": "You",
+  "Letzter Vollzugang": "Last full access",
+  "Standardname": "Default name",
+  "Passwort setzen": "Set password",
+  "Abbrechen": "Cancel",
+  "Rechte ändern": "Change rights",
+  "Benutzer deaktivieren": "Disable user",
+  "Benutzer löschen": "Delete user",
+  "Die Passwörter stimmen nicht überein.": "The passwords do not match.",
+  "Verwaltet die Anmeldekonten des Routers.": "Manages the router's login accounts.",
+  "darf alles,": "may do anything,",
+  "darf Einstellungen ändern, aber keine Benutzer,": "may change settings but not users,",
+  "nur ansehen. Der Standardbenutzer": "may only view. The default user",
+  "sollte abgeschaltet werden, sobald ein eigener Vollzugang funktioniert.": "should be switched off as soon as your own full-access user works.",
+  // Backend-Meldungen
+  "'group' muss full, write oder read sein": "'group' must be full, write or read",
+  "Benutzer unbekannt": "Unknown user",
+  "Benutzername: 1 bis 64 Zeichen, Buchstaben, Ziffern und _ . # @ -, am Anfang und Ende Buchstabe oder Ziffer":
+    "Username: 1 to 64 characters, letters, digits and _ . # @ -, starting and ending with a letter or digit",
+  "Das Passwort darf nur Buchstaben, Ziffern und Sonderzeichen ohne Umlaute enthalten, keine Anführungszeichen. RouterOS verwirft Umlaute per SSH stillschweigend.":
+    "The password may only contain letters, digits and ASCII symbols, no quotation marks. RouterOS silently drops non-ASCII characters over SSH.",
+  "Das Passwort darf nur Buchstaben, Ziffern und Sonderzeichen ohne Umlaute enthalten, keine Anführungszeichen (max. 63 Zeichen). RouterOS verwirft Umlaute per SSH stillschweigend.":
+    "The password may only contain letters, digits and ASCII symbols, no quotation marks (max. 63 characters). RouterOS silently drops non-ASCII characters over SSH.",
+  "Das eigene Passwort wird über 'Router-Passwort ändern' gesetzt.": "Your own password is set via 'Change router password'.",
+  "Benutzer angelegt, aber danach nicht wiedergefunden -- bitte Liste prüfen": "User created but not found afterwards -- please check the list",
+  "Der Router hat die Änderung nicht übernommen -- bitte Liste prüfen": "The router did not apply the change -- please check the list",
+  "Der Router hat die Gruppe nicht übernommen -- bitte Liste prüfen": "The router did not apply the group -- please check the list",
+  "Der Router hat den Benutzer nicht gelöscht -- bitte Liste prüfen": "The router did not delete the user -- please check the list",
+  "Der andere Benutzer mit vollen Rechten war noch nie angemeldet. Melde dich erst einmal mit ihm an, damit das Passwort nachweislich stimmt, dann lässt sich":
+    "The other full-access user has never logged in. Log in with it once first, so the password is proven to work, then",
+  "Benutzerliste konnte nicht gelesen werden.": "The user list could not be read.",
+  "Benutzerliste ist leer oder unlesbar.": "The user list is empty or unreadable.",
+  "Konnte nicht geprüft werden, ob der Standardbenutzer admin noch aktiv ist. Bitte später erneut prüfen.":
+    "Could not check whether the default user admin is still active. Please check again later.",
+  "Die Benutzerliste des Routers war leer oder unlesbar - keine verlässliche Aussage möglich.":
+    "The router's user list was empty or unreadable - no reliable statement possible.",
+  "admin ist deaktiviert oder entfernt.": "admin is disabled or removed.",
+  "Der Standardbenutzer admin ist abgeschaltet. Angreifer müssen damit auch den Benutzernamen raten, nicht nur das Passwort.":
+    "The default user admin is switched off. Attackers now have to guess the username as well, not just the password.",
+  "admin ist aktiv und der einzige Vollzugang.": "admin is active and the only full-access user.",
+  "Der Standardbenutzer admin ist aktiv und der einzige Vollzugang. Jeder Angriff auf MikroTik-Router probiert diesen Namen zuerst. Lege einen eigenen Vollzugang an (in Cockpit Pro unter Benutzer, sonst in WinBox unter System > Users), melde dich einmal damit an und schalte admin danach ab.":
+    "The default user admin is active and the only full-access user. Every attack on MikroTik routers tries this name first. Create your own full-access user (in Cockpit Pro under Users, otherwise in WinBox under System > Users), log in with it once, then switch admin off.",
+  "admin ist noch aktiv, obwohl ein eigener Vollzugang existiert.": "admin is still active although your own full-access user exists.",
+  "Ein eigener Vollzugang existiert bereits, admin ist aber noch aktiv. Schalte admin ab (in Cockpit Pro unter Benutzer, sonst in WinBox unter System > Users), sobald du dich mit dem eigenen Zugang einmal angemeldet hast.":
+    "Your own full-access user already exists, but admin is still active. Switch admin off (in Cockpit Pro under Users, otherwise in WinBox under System > Users) once you have logged in with your own account.",
 };

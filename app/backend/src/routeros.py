@@ -154,7 +154,7 @@ def trust_host_key(known_hosts_path: str, known_hosts_line: str) -> None:
 _ROUTEROS_ERROR_RE = re.compile(
     r"^(failure:|no such item|bad command name|input does not match|expected end of command|"
     r"ambiguous value|syntax error|script error|value of .+ (must|is not|out of range)|"
-    r"not enough permissions)",
+    r"not enough permissions|invalid value for argument)",
     re.IGNORECASE,
 )
 

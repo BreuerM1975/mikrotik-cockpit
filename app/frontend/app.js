@@ -1,6 +1,6 @@
 const defaultApiBase = window.location.port === "8787" ? `${window.location.origin}/api/v1` : "http://127.0.0.1:8787/api/v1";
 const API_BASE = (window.COCKPIT_BACKEND_URL || localStorage.getItem("cockpitBackendUrl") || defaultApiBase).replace(/\/$/, "");
-const state = { wifi: [], devices: [], forwards: [], backups: [], peers: [], vpnInterfaces: [], vpnInterfaceError: null, wanInterfaces: [], wanInterfaceError: null, pppoe: [], firewall: { forward: [], input: [], nat: [] }, services: [], guest: null, firmware: null, status: null, capabilities: null, network: null, dhcpRanges: [], leases: [], session: null, securityCheck: null, onboardingPage: "status" };
+const state = { wifi: [], devices: [], forwards: [], backups: [], peers: [], vpnInterfaces: [], vpnInterfaceError: null, wanInterfaces: [], wanInterfaceError: null, pppoe: [], firewall: { forward: [], input: [], nat: [] }, services: [], users: [], guest: null, firmware: null, status: null, capabilities: null, network: null, dhcpRanges: [], leases: [], session: null, securityCheck: null, onboardingPage: "status" };
 
 const $ = (selector) => document.querySelector(selector);
 let proModulePromise = null;
@@ -33,7 +33,7 @@ function applyTierUi() {
   // versehentlich eine Pro-Route berühren. Die endgültige öffentliche Ausgabe
   // enthält diese DOM-Blöcke nicht; diese Schutzschicht hält auch einen lokalen
   // Basis-Checkout mit noch altem HTML ehrlich.
-  document.querySelectorAll("#guest, #pppoe, #firewall, #services, #vpn").forEach((element) => element.remove());
+  document.querySelectorAll("#guest, #pppoe, #firewall, #services, #users, #vpn").forEach((element) => element.remove());
   $("#firmware-current")?.closest(".maintenance-card")?.remove();
   $("#router-password-form")?.closest(".maintenance-card")?.remove();
   document.querySelectorAll('[data-onboarding-page="guest"], [data-onboarding-page="maintenance"]').forEach((button) => button.remove());
@@ -542,7 +542,7 @@ function setupPages() {
     status: ["status"],
     wifi: ["wifi", "guest"],
     network: ["devices", "network", "dhcp-ranges", "pppoe"],
-    security: ["security-check", "forwards", "firewall", "services"],
+    security: ["security-check", "forwards", "firewall", "services", "users"],
     maintenance: ["maintenance"],
     help: ["faq", "wiki"],
   };

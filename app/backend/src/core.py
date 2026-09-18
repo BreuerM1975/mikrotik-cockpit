@@ -105,6 +105,55 @@ def _routeros_text(value: str, field: str, maximum: int = 128) -> str:
     return _routeros_escape(value)
 
 
+def _routeros_ascii(value: str, field: str, maximum: int = 128) -> str:
+    # 18.09.2026, live am hAP (RouterOS 7.23.1) bestaetigt: ueber den SSH-Exec-Kanal wirft
+    # RouterOS Nicht-ASCII-Bytes STILL aus Stringliteralen (`:put [:len "ä"]` = 0). Ein Passwort
+    # mit Umlaut landet also ohne Umlaut auf dem Router, Cockpit merkt sich aber den Wert mit
+    # Umlaut -- der naechste Befehl scheitert mit 401, der Undo ebenfalls, der Kunde kennt sein
+    # echtes Passwort nicht. Deshalb fuer Passwoerter und Benutzernamen nur druckbares ASCII
+    # (32 bis 126), zusaetzlich ohne `;` und `"` wie in _routeros_text().
+    if (
+        not isinstance(value, str) or not value or len(value) > maximum
+        or any(not 32 <= ord(char) <= 126 or char in ';"' for char in value)
+    ):
+        raise ValueError(field)
+    return _routeros_escape(value)
+
+
+# RouterOS-Standardgruppen. Benutzer in selbst angelegten Gruppen (eigene Policy-Kombination)
+# werden angezeigt, aber Cockpit bietet fuer sie keinen Gruppenwechsel an und zaehlt sie beim
+# Schutz des letzten Vollzugangs bewusst NICHT mit (konservativ: lieber eine Sperre zu viel).
+USER_GROUPS = ("full", "write", "read")
+DEFAULT_ADMIN_USER = "admin"
+
+
+def list_users() -> list[dict]:
+    # Gemeinsame Quelle fuer den Sicherheits-Check (Basis) und die Benutzerverwaltung (Pro).
+    # Live am 18.09. (Dossier mikrotik-experte, hAP 7.23.1): "disabled" kommt in `print terse`
+    # nur als Flag X vor dem ersten key= (parse_terse setzt row["disabled"] daraus), das Flag E
+    # heisst "Passwort abgelaufen"; `last-logged-in` FEHLT komplett, wenn sich der Benutzer nie
+    # angemeldet hat, und enthaelt sonst ein Leerzeichen zwischen Datum und Uhrzeit.
+    rows = parse_terse(router("/user print terse"))
+    users = []
+    for row in rows:
+        name = row.get("name")
+        if not name:
+            continue
+        users.append({
+            "name": name,
+            "group": row.get("group", ""),
+            "disabled": bool(row.get("disabled")),
+            "last_logged_in": row.get("last-logged-in") or None,
+            "address": row.get("address", ""),
+            "comment": row.get("comment", ""),
+        })
+    return users
+
+
+def active_full_users(users: list[dict]) -> list[dict]:
+    return [u for u in users if u["group"] == "full" and not u["disabled"]]
+
+
 def _valid_ipv4_cidr(value: str) -> bool:
     # Audit A11, 09.09.: ipaddress.ip_interface() akzeptiert auch IPv6 -- dieser Helfer heisst
     # bewusst "ipv4", also explizit IPv4Interface statt des allgemeinen ip_interface().

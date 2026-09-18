@@ -118,6 +118,13 @@
 .service-row.is-disabled { opacity:.65; }
 .service-toggle { flex:0 0 auto; border:1px solid #cbd8f3; border-radius:7px; padding:8px 12px; color:#4166b5; background:#f6f8ff; font-size:11px; font-weight:700; }
 .service-toggle.is-off { color:#238d5d; border-color:#cce9d9; background:#f1fbf5; }
+.user-row { align-items:flex-start; }
+.user-row .status-badge { margin-left:6px; vertical-align:middle; }
+.user-controls { display:flex; flex:0 0 auto; align-items:center; gap:8px; }
+.user-group-select { padding:8px 10px; border:1px solid #dce2e9; border-radius:7px; color:var(--ink); background:var(--input-bg); font-size:11px; }
+.user-actions { margin-top:8px; }
+.user-password-form { max-width:360px; }
+.user-password-form .form-row button { width:100%; }
 .reboot-button { margin-top:14px; background:#b85b4c; }
 .reboot-button:hover { background:#9f493d; }
 .warning-banner { border-color:#f0d9b5; color:#806337; background:#fff9ef; }

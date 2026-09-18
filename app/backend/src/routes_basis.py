@@ -392,11 +392,14 @@ def wifi_password(interface: str):
         return jsonify({"error": "password_too_short", "message": "Mindestens 8 Zeichen"}), 400
     try:
         safe_interface = core._routeros_value(interface, "interface")
-        safe_password = core._routeros_text(new_password, "new_password", maximum=63)
+        # WPA-Passphrasen sind laut IEEE 802.11 druckbares ASCII (8 bis 63 Zeichen), und RouterOS
+        # wuerde einen Umlaut per SSH ohnehin still verwerfen (siehe core._routeros_ascii()).
+        safe_password = core._routeros_ascii(new_password, "new_password", maximum=63)
     except ValueError:
         return jsonify({
             "error": "invalid_password",
-            "message": "Das Passwort darf keine Anführungszeichen oder Zeilenumbrüche enthalten (max. 63 Zeichen)",
+            "message": "Das Passwort darf nur Buchstaben, Ziffern und Sonderzeichen ohne Umlaute enthalten, "
+                       "keine Anführungszeichen (max. 63 Zeichen). RouterOS verwirft Umlaute per SSH stillschweigend.",
         }), 400
 
     # Audit Runde 4, 09.09.: "safe_interface" ist hier schon ueber core._routeros_value() escaped
@@ -1423,10 +1426,50 @@ def _security_check_backup() -> dict:
             "plain": f"Das letzte Backup ist {int(age_days)} Tag(e) alt - aktuell genug."}
 
 
+def _security_check_default_user() -> dict:
+    # Neu 18.09.2026: MikroTiks eigener Haertungsleitfaden (getting-started/securing-your-router)
+    # beginnt mit "eigenen Benutzer anlegen, dann admin deaktivieren". Cockpit hat das bisher
+    # weder geprueft noch angeboten. Der Fix selbst (Benutzer anlegen, admin abschalten) liegt in
+    # der Pro-Benutzerverwaltung; die Pruefung gehoert zum Basis-Kernversprechen.
+    label = "Standardbenutzer admin"
+    try:
+        users = core.list_users()
+    except (RouterCommandFailed, RouterUnreachable):
+        return {"id": "default_user", "label": label, "status": "unknown",
+                "detail": "Benutzerliste konnte nicht gelesen werden.",
+                "plain": "Konnte nicht geprüft werden, ob der Standardbenutzer admin noch aktiv "
+                         "ist. Bitte später erneut prüfen."}
+    if not users:
+        return {"id": "default_user", "label": label, "status": "unknown",
+                "detail": "Benutzerliste ist leer oder unlesbar.",
+                "plain": "Die Benutzerliste des Routers war leer oder unlesbar - keine "
+                         "verlässliche Aussage möglich."}
+    admin = next((u for u in users if u["name"] == core.DEFAULT_ADMIN_USER), None)
+    if admin is None or admin["disabled"]:
+        return {"id": "default_user", "label": label, "status": "good",
+                "detail": "admin ist deaktiviert oder entfernt.",
+                "plain": "Der Standardbenutzer admin ist abgeschaltet. Angreifer müssen damit "
+                         "auch den Benutzernamen raten, nicht nur das Passwort."}
+    others = [u for u in core.active_full_users(users) if u["name"] != core.DEFAULT_ADMIN_USER]
+    if not others:
+        return {"id": "default_user", "label": label, "status": "warn",
+                "detail": "admin ist aktiv und der einzige Vollzugang.",
+                "plain": "Der Standardbenutzer admin ist aktiv und der einzige Vollzugang. Jeder "
+                         "Angriff auf MikroTik-Router probiert diesen Namen zuerst. Lege einen eigenen "
+                         "Vollzugang an (in Cockpit Pro unter Benutzer, sonst in WinBox unter "
+                         "System > Users), melde dich einmal damit an und schalte admin danach ab."}
+    return {"id": "default_user", "label": label, "status": "warn",
+            "detail": "admin ist noch aktiv, obwohl ein eigener Vollzugang existiert.",
+            "plain": "Ein eigener Vollzugang existiert bereits, admin ist aber noch aktiv. "
+                     "Schalte admin ab (in Cockpit Pro unter Benutzer, sonst in WinBox unter "
+                     "System > Users), sobald du dich mit dem eigenen Zugang einmal angemeldet hast."}
+
+
 @bp.get("/api/v1/security-check")
 def security_check():
     checks = [
         _security_check_service_hygiene(),
+        _security_check_default_user(),
         _security_check_input_firewall(),
         _security_check_guest_isolation(),
         _security_check_firmware(),
