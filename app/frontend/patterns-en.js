@@ -71,8 +71,10 @@ window.COCKPIT_PATTERNS_EN = [
   [/^Die Gruppe (.+) ist eine eigene Gruppe, Cockpit ändert sie nicht\.$/, "The group $1 is a custom group; Cockpit does not change it."],
   [/^Der angemeldete Benutzer kann sich nicht selbst (.+?)\.$/,
     (_match, verb) => `The logged-in user cannot ${USER_VERBS_EN[verb] || verb} itself.`],
-  [/^(.+) ist der letzte aktive Benutzer mit vollen Rechten und lässt sich nicht (.+?)\. Lege zuerst einen weiteren an\.$/,
-    (_match, name, verb) => `${name} is the last active full-access user and cannot be ${USER_VERBS_EN_PAST[verb] || verb}. Create another one first.`],
+  [/^(.+) ist der letzte aktive Benutzer mit vollen Rechten und lässt sich nicht (.+?)\. Lege zuerst einen weiteren an\. Benutzer in eigenen Gruppen zählt Cockpit dabei nicht mit\.$/,
+    (_match, name, verb) => `${name} is the last active full-access user and cannot be ${USER_VERBS_EN_PAST[verb] || verb}. Create another one first. Users in custom groups do not count here.`],
+  [/^Auf dem Router gibt es schon eine Gruppe (.+), die mehr darf als nur ansehen \((.+)\)\. Cockpit benutzt sie deshalb nicht\. Benenne sie in WinBox um oder entferne die Rechte\.$/,
+    "The router already has a group $1 that may do more than view ($2). Cockpit therefore does not use it. Rename it in WinBox or remove those rights."],
   [/^Der andere Benutzer mit vollen Rechten war noch nie angemeldet\. Melde dich erst einmal mit ihm an, damit das Passwort nachweislich stimmt, dann lässt sich (.+) (.+?)\.$/,
     (_match, name, verb) => `The other full-access user has never logged in. Log in with it once first, so the password is proven to work, then ${name} can be ${USER_VERBS_EN_PAST[verb] || verb}.`],
 ];

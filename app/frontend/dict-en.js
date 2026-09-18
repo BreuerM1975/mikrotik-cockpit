@@ -840,13 +840,35 @@ window.COCKPIT_DICT_EN = {
   "ab. Cockpit verhindert, dass du dich selbst aussperrst: Der angemeldete Benutzer und der letzte Vollzugang lassen sich weder deaktivieren noch löschen oder herabstufen.":
     ". Cockpit stops you locking yourself out: the logged-in user and the last full-access user cannot be disabled, deleted or downgraded.",
   "Benutzer anlegen": "Create user",
-  "Vollzugriff, Ändern oder nur Lesen": "Full access, change or read only",
+  "Vollzugriff, Ändern oder nur ansehen": "Full access, change or view only",
   "Benutzername": "Username",
   "z. B. marco": "e.g. marco",
   "Rechte": "Rights",
   "Vollzugriff (full)": "Full access (full)",
   "Ändern ohne Benutzerverwaltung (write)": "Change settings, no user management (write)",
-  "Nur lesen (read)": "Read only (read)",
+  "Nur ansehen (cockpit-viewer)": "View only (cockpit-viewer)",
+  "Nur ansehen": "View only",
+  "Lesen (sieht Passwörter, darf neu starten)": "Read (sees passwords, may reboot)",
+  "Passwort abgelaufen": "Password expired",
+  "Nur ansehen ist eine Gruppe, die Cockpit beim ersten Bedarf auf dem Router anlegt: sieht Einstellungen, aber keine Passwörter, darf nicht neu starten und nichts mitschneiden. Die RouterOS-Gruppe read kann das alles und ist deshalb hier kein Ziel.":
+    "View only is a group Cockpit creates on the router when first needed: it sees settings but no passwords, cannot reboot and cannot sniff traffic. The RouterOS group read can do all of that, which is why it is not offered here.",
+  "Der angemeldete Benutzer darf keine Benutzer verwalten. Verbinde dich dafür mit einem Benutzer der Gruppe full.":
+    "The logged-in user may not manage users. Connect with a user in the full group to do that.",
+  "Gruppe Nur ansehen anlegen": "Create the view-only group",
+  "Anlegen": "Create",
+  "Cockpit legt dafür auf dem Router die Gruppe cockpit-viewer an: ansehen ja, aber keine Passwörter lesen, nicht neu starten, nichts mitschneiden.":
+    "Cockpit will create the group cockpit-viewer on the router: viewing yes, but no reading passwords, no reboot, no sniffing.",
+  "'group' muss full, write oder cockpit-viewer sein": "'group' must be full, write or cockpit-viewer",
+  "Höchstens 128 Zeichen": "At most 128 characters",
+  "Der Benutzer ist inzwischen nicht mehr da -- bitte Liste prüfen": "The user no longer exists -- please check the list",
+  "Der angemeldete Router-Benutzer hat dafür keine Rechte. Für diese Aktion braucht es einen Benutzer der Gruppe full.":
+    "The logged-in router user has no permission for this. This action needs a user in the full group.",
+  "Der Router lehnt das Passwort wegen seiner eigenen Passwortrichtlinie ab (zu kurz oder zu wenige Zeichenarten aus Ziffern, Klein- und Großbuchstaben, Symbolen).":
+    "The router rejects the password because of its own password policy (too short, or too few character types out of digits, lower and upper case letters and symbols).",
+  "darf Einstellungen ändern, aber keine Benutzer.": "may change settings but not users.",
+  "darf nichts ändern, sieht aber alle Passwörter und darf den Router neu starten, deshalb legt Cockpit für Familie und Gäste die Gruppe":
+    "cannot change anything but sees every password and may reboot the router, which is why Cockpit creates the group",
+  "an, die nur ansehen darf. Der Standardbenutzer": "for family and guests, which may only view. The default user",
   "Nur Buchstaben, Ziffern und Sonderzeichen ohne Umlaute, keine Anführungszeichen. RouterOS verwirft Umlaute per SSH stillschweigend.":
     "Letters, digits and ASCII symbols only, no quotation marks. RouterOS silently drops non-ASCII characters over SSH.",
   "Keine Benutzer gefunden.": "No users found.",
@@ -864,8 +886,6 @@ window.COCKPIT_DICT_EN = {
   "Die Passwörter stimmen nicht überein.": "The passwords do not match.",
   "Verwaltet die Anmeldekonten des Routers.": "Manages the router's login accounts.",
   "darf alles,": "may do anything,",
-  "darf Einstellungen ändern, aber keine Benutzer,": "may change settings but not users,",
-  "nur ansehen. Der Standardbenutzer": "may only view. The default user",
   "sollte abgeschaltet werden, sobald ein eigener Vollzugang funktioniert.": "should be switched off as soon as your own full-access user works.",
   // Backend-Meldungen
   "'group' muss full, write oder read sein": "'group' must be full, write or read",

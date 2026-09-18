@@ -36,7 +36,7 @@ cfg = core.cfg
 # Kennung dieses Prozesses (Startzeit). Das Frontend merkt sich den ersten Wert und laedt die
 # Seite neu, sobald er sich aendert -- so arbeitet nach einem Update (start-cockpit.sh startet
 # den Dienst neu) nie eine alte Oberflaeche gegen ein neues Backend weiter.
-BUILD_ID = str(int(time.time()))
+BUILD_ID = f"{int(time.time())}-{os.getpid()}"
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend"))
 
 
@@ -60,9 +60,28 @@ def handle_command_failed(exc):
     # Audit A14: RouterOS meldet manche Fehler (ungueltiger Wert, fehlende Rechte,
     # Syntaxfehler) trotz Exitcode 0 nur im Ausgabetext -- run_command() erkennt bekannte
     # Fehlermuster und wirft das hier als eigenen Fehler statt es als Erfolg durchzureichen.
+    text = str(exc)
+    lowered = text.lower()
+    # Audit 18.09., Befund 3: "not enough permissions (9) (/user/set *0)" liest sich wie ein Absturz;
+    # tatsaechlich fehlt dem Sitzungsbenutzer nur die Policy (Benutzer verwalten darf nur full).
+    if "not enough permissions" in lowered:
+        return jsonify({
+            "error": "router_permission_denied",
+            "message": "Der angemeldete Router-Benutzer hat dafür keine Rechte. Für diese Aktion braucht "
+                       "es einen Benutzer der Gruppe full.",
+        }), 403
+    # Kundeneigene Passwortrichtlinie (/user settings minimum-categories, minimum-password-length),
+    # live am hAP 18.09.: "failure: password is too weak - it must contain characters from at least
+    # 4 categories (...)". Ist eine Eingabeablehnung, kein Routerfehler.
+    if "password is too weak" in lowered or "password is too short" in lowered:
+        return jsonify({
+            "error": "password_policy",
+            "message": "Der Router lehnt das Passwort wegen seiner eigenen Passwortrichtlinie ab "
+                       "(zu kurz oder zu wenige Zeichenarten aus Ziffern, Klein- und Großbuchstaben, Symbolen).",
+        }), 400
     return jsonify({
         "error": "router_command_failed",
-        "message": f"Der Router hat den Befehl abgelehnt: {exc}",
+        "message": f"Der Router hat den Befehl abgelehnt: {text}",
     }), 502
 
 

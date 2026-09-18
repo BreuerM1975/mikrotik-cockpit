@@ -66,7 +66,7 @@ if [[ -n "$existing_pids" ]]; then
       if curl -fsS --max-time 1 http://127.0.0.1:8787/ >/dev/null 2>&1; then
         process_age="$(ps -p "$existing_pid" -o etimes= 2>/dev/null | tr -d ' ' || true)"
         started_at="$(( $(date +%s) - ${process_age:-0} ))"
-        updated_files="$(find "$project_dir/app" -type f -newermt "@$started_at" ! -path '*/__pycache__/*' 2>/dev/null | head -1 || true)"
+        updated_files="$(find "$project_dir/app" -type f -newermt "@$started_at" ! -path '*/__pycache__/*' ! -path '*/.*' \( -name '*.py' -o -name '*.js' -o -name '*.html' -o -name '*.css' -o -name '*.txt' \) 2>/dev/null | head -1 || true)"
         if [[ -z "$updated_files" ]]; then
           echo "Cockpit is already running at: http://127.0.0.1:8787/"
           if command -v xdg-open >/dev/null 2>&1; then

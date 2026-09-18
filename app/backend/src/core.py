@@ -18,7 +18,9 @@ nicht explizit als "geteilt" auffuehrt.
 """
 
 import ipaddress
+import json
 import os
+import re
 import threading
 
 from flask import request
@@ -120,34 +122,140 @@ def _routeros_ascii(value: str, field: str, maximum: int = 128) -> str:
     return _routeros_escape(value)
 
 
-# RouterOS-Standardgruppen. Benutzer in selbst angelegten Gruppen (eigene Policy-Kombination)
-# werden angezeigt, aber Cockpit bietet fuer sie keinen Gruppenwechsel an und zaehlt sie beim
-# Schutz des letzten Vollzugangs bewusst NICHT mit (konservativ: lieber eine Sperre zu viel).
-USER_GROUPS = ("full", "write", "read")
+# RouterOS-Standardgruppen plus die von Cockpit verwaltete Gruppe "cockpit-viewer" (Audit 18.09.,
+# Befund 1): die Systemgruppe `read` darf laut Doku und live am hAP den Router neu starten
+# (`reboot`), Verkehr mitschneiden (`sniff`) und alle Passwoerter im Klartext lesen (`sensitive`,
+# WLAN-Passphrase, PPPoE, WireGuard-Keys). MikroTik selbst: "should not be given to untrusted
+# users". Fuer Familie oder Partner legt Cockpit deshalb bei Bedarf eine eigene Gruppe an, die
+# genau das nicht darf. Benutzer in sonstigen selbst angelegten Gruppen werden angezeigt, Cockpit
+# bietet fuer sie keinen Gruppenwechsel an und zaehlt sie beim Schutz des letzten Vollzugangs
+# bewusst NICHT mit (konservativ: lieber eine Sperre zu viel).
+VIEWER_GROUP = "cockpit-viewer"
+# Vollstaendig ausgeschrieben, damit kein RouterOS-Standard still etwas hinzufuegt.
+VIEWER_GROUP_POLICY = (
+    "read,ssh,winbox,web,api,rest-api,password,"
+    "!local,!telnet,!ftp,!reboot,!write,!policy,!test,!sniff,!sensitive,!romon"
+)
+# Was eine bestehende Gruppe dieses Namens auf keinen Fall duerfen darf, sonst haengt Cockpit
+# einen "Nur ansehen"-Benutzer in eine Gruppe, die der Kunde selbst maechtiger gebaut hat.
+VIEWER_GROUP_FORBIDDEN = ("write", "policy", "sensitive", "reboot", "sniff", "ftp", "test")
+USER_GROUPS = ("full", "write", "read", VIEWER_GROUP)          # Cockpit kennt und zeigt sie
+USER_GROUP_TARGETS = ("full", "write", VIEWER_GROUP)          # dahin legt Cockpit an oder haengt um
 DEFAULT_ADMIN_USER = "admin"
 
 
-def list_users() -> list[dict]:
-    # Gemeinsame Quelle fuer den Sicherheits-Check (Basis) und die Benutzerverwaltung (Pro).
-    # Live am 18.09. (Dossier mikrotik-experte, hAP 7.23.1): "disabled" kommt in `print terse`
-    # nur als Flag X vor dem ersten key= (parse_terse setzt row["disabled"] daraus), das Flag E
-    # heisst "Passwort abgelaufen"; `last-logged-in` FEHLT komplett, wenn sich der Benutzer nie
-    # angemeldet hat, und enthaelt sonst ein Leerzeichen zwischen Datum und Uhrzeit.
-    rows = parse_terse(router("/user print terse"))
+class ViewerGroupUnsafe(Exception):
+    pass
+
+
+def router_json(path: str) -> list[dict] | None:
+    # RouterOS 7.13+ liefert Listen als JSON, damit entfaellt das Terse-Raten (Audit 18.09., Befund
+    # 2: ein "disabled=true" im KOMMENTAR eines Benutzers wurde vom Terse-Parser als Feld gelesen).
+    # json.no-string-conversion, sonst wird der Benutzername "12345" zur Zahl. Aeltere 7.x kennen
+    # :serialize nicht ("bad command name" kommt als RouterCommandFailed) -> None, Aufrufer faellt
+    # auf Terse zurueck.
+    try:
+        raw = router(f":put [:serialize to=json options=json.no-string-conversion value=[{path} print as-value]]")
+    except RouterCommandFailed as exc:
+        if "bad command name" in str(exc).lower() or "syntax error" in str(exc).lower():
+            return None
+        raise
+    # Leere Ausgabe heisst "kein JSON" (unbekannter Befehl ohne Fehlertext), nie "keine Eintraege":
+    # mindestens ein Benutzer existiert immer.
+    if not raw.strip():
+        return None
+    try:
+        rows = json.loads(raw.strip())
+    except ValueError:
+        return None
+    return rows if isinstance(rows, list) else None
+
+
+_USER_TERSE_RE = re.compile(
+    r"\b(name|group|address|comment|last-logged-in)=(.*?)"
+    r"(?=\s+(?:name|group|inactivity-timeout|inactivity-policy|address|comment|last-logged-in)=|$)"
+)
+
+
+def _list_users_terse() -> list[dict]:
+    # Fallback ohne :serialize: nur die bekannten Schluessel matchen, damit ein "x=y" im
+    # Kommentar nicht zum Feld wird. Live am 18.09. (hAP 7.23.1): "disabled" kommt in
+    # `print terse` nur als Flag X vor dem ersten key=, E heisst "Passwort abgelaufen";
+    # `last-logged-in` FEHLT komplett, wenn sich der Benutzer nie angemeldet hat.
     users = []
-    for row in rows:
+    for line in router("/user print terse").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        flags = "".join(line[: line.index("=")].split()[1:])
+        row = {k: v.strip() for k, v in _USER_TERSE_RE.findall(line)}
         name = row.get("name")
         if not name:
             continue
         users.append({
             "name": name,
             "group": row.get("group", ""),
-            "disabled": bool(row.get("disabled")),
+            "disabled": "X" in flags,
+            "expired": "E" in flags,
             "last_logged_in": row.get("last-logged-in") or None,
             "address": row.get("address", ""),
             "comment": row.get("comment", ""),
         })
     return users
+
+
+def list_users() -> list[dict]:
+    # Gemeinsame Quelle fuer den Sicherheits-Check (Basis) und die Benutzerverwaltung (Pro).
+    rows = router_json("/user")
+    if rows is None:
+        return _list_users_terse()
+    users = []
+    for row in rows:
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        address = row.get("address") or []
+        users.append({
+            "name": name,
+            "group": str(row.get("group", "")),
+            "disabled": row.get("disabled") is True,
+            "expired": row.get("expired") is True,
+            "last_logged_in": row.get("last-logged-in") or None,
+            "address": ",".join(str(a) for a in address) if isinstance(address, list) else str(address),
+            "comment": str(row.get("comment") or ""),
+        })
+    return users
+
+
+def list_user_groups() -> list[dict]:
+    rows = router_json("/user group")
+    if rows is None:
+        groups = []
+        for row in parse_terse(router("/user group print terse")):
+            if row.get("name"):
+                groups.append({"name": row["name"], "policy": [p for p in row.get("policy", "").split(",") if p]})
+        return groups
+    groups = []
+    for row in rows:
+        if isinstance(row.get("name"), str):
+            policy = row.get("policy") or []
+            groups.append({"name": row["name"], "policy": [str(p) for p in policy] if isinstance(policy, list) else str(policy).split(",")})
+    return groups
+
+
+def ensure_viewer_group() -> None:
+    # Legt "cockpit-viewer" an, falls sie fehlt, und weigert sich, eine gleichnamige Gruppe zu
+    # benutzen, die mehr darf als "nur ansehen". Aufrufer haelt _router_create_lock().
+    existing = next((g for g in list_user_groups() if g["name"] == VIEWER_GROUP), None)
+    if existing is None:
+        router(f'/user group add name="{VIEWER_GROUP}" policy={VIEWER_GROUP_POLICY}')
+        existing = next((g for g in list_user_groups() if g["name"] == VIEWER_GROUP), None)
+        if existing is None:
+            raise RouterCommandFailed(f"Gruppe {VIEWER_GROUP} wurde nicht angelegt")
+    granted = {p for p in existing["policy"] if not p.startswith("!")}
+    unsafe = sorted(granted & set(VIEWER_GROUP_FORBIDDEN))
+    if unsafe:
+        raise ViewerGroupUnsafe(", ".join(unsafe))
 
 
 def active_full_users(users: list[dict]) -> list[dict]:

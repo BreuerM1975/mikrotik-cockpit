@@ -1911,7 +1911,10 @@ class ApiTest(unittest.TestCase):
             },
             headers=self.headers,
         )
-        self.assertEqual(resp.status_code, 502)
+        # "not enough permissions" wird seit 18.09. als 403 router_permission_denied uebersetzt
+        # (Audit Befund 3); der Rollback muss davon unabhaengig laufen.
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.get_json()["error"], "router_permission_denied")
         calls = [c.args[0] for c in mock_router.call_args_list]
         self.assertTrue(any(c.startswith("/ip pool remove") for c in calls))
         self.assertTrue(any(c.startswith("/ip dhcp-server remove") for c in calls))
@@ -2317,5 +2320,30 @@ class BuildHeaderTest(unittest.TestCase):
         for resp in (client.get("/"), client.get("/api/v1/status")):
             self.assertEqual(resp.headers.get("X-Cockpit-Build"), app_module.BUILD_ID)
             self.assertIn("X-Cockpit-Build", resp.headers.get("Access-Control-Expose-Headers", ""))
-        self.assertTrue(app_module.BUILD_ID.isdigit())
+        self.assertRegex(app_module.BUILD_ID, r"^\d+-\d+$")
+
+
+class SecurityCheckDefaultUserErrorsTest(unittest.TestCase):
+    # Audit 18.09., fehlender Testfall 11: Timeout und Auth-Fehler beim Lesen der Benutzerliste
+    # muessen als 504/401 beim Client ankommen, nicht als 500.
+    def setUp(self):
+        app_module.app.testing = True
+        self.client = app_module.app.test_client()
+        core_module.SESSIONS["sc-err"] = {"host": "test-host", "user": "admin", "password": "x", "ssh_port": 22}
+        self.headers = {"X-Cockpit-Session": "sc-err"}
+
+    def tearDown(self):
+        core_module.SESSIONS.clear()
+
+    def test_timeout_and_auth_failure_propagate_cleanly(self):
+        from routeros import RouterAuthFailed, RouterTimeout
+        for exc, code, error in ((RouterTimeout("t"), 504, "router_timeout"), (RouterAuthFailed("a"), 401, "auth_failed")):
+            def failing(command, exc=exc):
+                if "/user print" in command:
+                    raise exc
+                return fake_router(command)
+            with patch("core.router", side_effect=failing):
+                resp = self.client.get("/api/v1/security-check", headers=self.headers)
+            self.assertEqual(resp.status_code, code)
+            self.assertEqual(resp.get_json()["error"], error)
 
