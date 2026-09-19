@@ -17,6 +17,7 @@ from routeros import (
     HostKeyUnknown,
     RouterAuthFailed,
     RouterCommandFailed,
+    RouterTimeout,
     RouterUnreachable,
 )
 
@@ -221,6 +222,23 @@ RB_PRINT_REBOOT_PENDING = (
     + RB_PRINT_IN_SYNC
 )
 RB_PRINT_NO_ROUTERBOARD = '  routerboard: no\n'
+# Umbruchvariante aus der Doku (routerboot.md): zweite Zeile ohne ";;;" -- und eine Variante, bei
+# der "reboot" erst auf der zweiten Zeile steht (Audit 19.09., Befund 1).
+RB_PRINT_REBOOT_PENDING_DOC = (
+    '                ;;; Firmware upgraded successfully, please reboot for changes \n'
+    '                    to take effect!                                           \n'
+    + RB_PRINT_IN_SYNC
+)
+RB_PRINT_REBOOT_PENDING_EARLY_WRAP = (
+    '         ;;; Firmware upgraded successfully, please\n'
+    '             reboot for changes to take effect!\n'
+    + RB_PRINT_IN_SYNC
+)
+# Nach einem RouterOS-Downgrade: aktive Firmware neuer als die mitgelieferte.
+RB_PRINT_DOWNGRADED = (
+    '       routerboard: yes\n             model: RB952Ui-5ac2nD\n'
+    '  current-firmware: 7.24.4\n  upgrade-firmware: 7.23.7\n'
+)
 
 
 def fake_router(command):
@@ -1513,6 +1531,31 @@ class ApiTest(unittest.TestCase):
 
     def test_security_check_routerboard_read_error_is_unknown(self):
         check, _ = self._routerboard_check(RouterCommandFailed("boom"))
+        self.assertEqual(check["status"], "unknown")
+
+    def test_security_check_routerboard_timeout_is_unknown_not_504(self):
+        check, data = self._routerboard_check(RouterTimeout("slow"))
+        self.assertEqual(check["status"], "unknown")
+        self.assertIn("score", data)
+
+    def test_security_check_routerboard_marker_doc_wrap_variants(self):
+        for output in (RB_PRINT_REBOOT_PENDING_DOC, RB_PRINT_REBOOT_PENDING_EARLY_WRAP):
+            check, _ = self._routerboard_check(output)
+            self.assertEqual(check["status"], "warn")
+            self.assertIn("Neustart fehlt", check["detail"])
+
+    def test_security_check_routerboard_downgrade_is_good(self):
+        check, _ = self._routerboard_check(RB_PRINT_DOWNGRADED)
+        self.assertEqual(check["status"], "good")
+        self.assertIn("nichts zu tun", check["plain"])
+
+    def test_security_check_routerboard_x86_without_menu_is_unknown(self):
+        check, _ = self._routerboard_check(RouterCommandFailed("bad command name routerboard"))
+        self.assertEqual(check["status"], "unknown")
+        self.assertIn("CHR", check["detail"])
+
+    def test_security_check_routerboard_empty_output_is_unknown(self):
+        check, _ = self._routerboard_check("")
         self.assertEqual(check["status"], "unknown")
 
     @patch("core.router", side_effect=fake_router)

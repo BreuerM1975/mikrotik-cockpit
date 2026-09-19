@@ -1469,7 +1469,7 @@ def _security_check_routerboard() -> dict:
     label = "RouterBOARD-Firmware"
     try:
         state = core.routerboard_state()
-    except (RouterCommandFailed, RouterUnreachable):
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
         return {"id": "routerboard", "label": label, "status": "unknown",
                 "detail": "RouterBOARD-Stand konnte nicht gelesen werden.",
                 "plain": "Es konnte nicht geprüft werden, ob die RouterBOARD-Firmware zu RouterOS passt."}
@@ -1488,6 +1488,11 @@ def _security_check_routerboard() -> dict:
         return {"id": "routerboard", "label": label, "status": "unknown",
                 "detail": "Versionsdaten der RouterBOARD-Firmware fehlen.",
                 "plain": "Der Router nennt keine RouterBOARD-Firmwareversion, die Prüfung entfällt."}
+    if state.get("firmware_newer"):
+        return {"id": "routerboard", "label": label, "status": "good",
+                "detail": f"{current} aktiv, RouterOS bringt nur {upgrade} mit.",
+                "plain": f"Die RouterBOARD-Firmware ({current}) ist neuer als die von RouterOS mitgelieferte "
+                         f"({upgrade}), meist nach einem RouterOS-Downgrade. Es ist nichts zu tun."}
     if state["upgrade_available"]:
         return {"id": "routerboard", "label": label, "status": "warn",
                 "detail": f"{current} aktiv, {upgrade} bereit.",

@@ -163,6 +163,25 @@ window.COCKPIT_DICT_EN = {
     "RouterBOARD firmware will be applied automatically after RouterOS updates. Another restart is still needed.",
   "Automatisches Einspielen der RouterBOARD-Firmware ist ausgeschaltet.":
     "Automatic RouterBOARD firmware updates are switched off.",
+  "Router startet neu": "Router is restarting",
+  "Router startet neu …": "Router is restarting …",
+  "Neustart wurde von dir ausgelöst": "Restart was triggered by you",
+  "RouterOS-Update läuft, der Router startet gleich neu": "RouterOS update running, the router restarts shortly",
+  "RouterBOARD-Firmware wird aktiv": "RouterBOARD firmware becomes active",
+  "Verbindung beim Neustart abgerissen, Cockpit prüft gleich nach": "Connection dropped during restart, Cockpit will check again shortly",
+  "Der Router ist wieder erreichbar.": "The router is reachable again.",
+  "Der Router meldet sich seit 4 Minuten nicht. Bitte Strom und LEDs prüfen.": "The router has not responded for 4 minutes. Please check power and LEDs.",
+  "Der Router lädt RouterOS herunter und startet dann neu. Danach zeigt das Cockpit, ob die RouterBOARD-Firmware als zweiter Schritt noch angewendet werden muss (zweiter Neustart).":
+    "The router downloads RouterOS and then restarts. Afterwards Cockpit shows whether the RouterBOARD firmware still needs to be applied as a second step (second restart).",
+  "Der Startlader (RouterBOARD-Firmware) wird neu geschrieben, danach startet der Router neu und ist etwa eine Minute nicht erreichbar. Nicht den Strom trennen. Startet der Router danach nicht, hilft der Backup-Loader: Reset-Taste gedrückt halten und erst dann einschalten.":
+    "The boot loader (RouterBOARD firmware) is rewritten, then the router restarts and is unavailable for about a minute. Do not disconnect power. If the router does not start afterwards, use the backup loader: hold the reset button and only then switch on.",
+  "Der Router startet neu und ist etwa eine Minute nicht erreichbar.": "The router restarts and is unavailable for about a minute.",
+  "Achtung: Protected RouterBOOT ist aktiv. Reset-Taste und Netinstall sind damit abgeschaltet; schlägt der Start fehl, bleibt nur das Notfall-Reformat mit Datenverlust. Mach vorher ein Backup.":
+    "Warning: Protected RouterBOOT is enabled. The reset button and Netinstall are disabled; if the start fails, only the emergency reformat with data loss remains. Make a backup first.",
+  "Stand unbekannt": "Status unknown",
+  "✓ Neuer als RouterOS": "✓ Newer than RouterOS",
+  "Der Router hat das Einspielen nicht bestätigt. Die Firmware kann trotzdem geschrieben sein. Starte den Router unter Router-Zugang neu; danach zeigt die Firmware-Karte den echten Stand.":
+    "The router did not confirm applying the firmware. It may have been written anyway. Restart the router under Router access; the firmware card then shows the real state.",
   "Es konnte nicht geprüft werden, ob die RouterBOARD-Firmware zu RouterOS passt.":
     "It could not be checked whether the RouterBOARD firmware matches RouterOS.",
   "RouterBOARD-Firmware ist bereits auf dem Stand von RouterOS":

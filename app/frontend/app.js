@@ -231,8 +231,44 @@ async function request(path, options = {}, withSession = true) {
   if (failure.code === "not_connected") showConnect("Die Verbindung ist abgelaufen. Bitte erneut verbinden.");
   throw failure;
 }
+// Erwarteter Neustart (Reboot-Knopf, RouterOS-Update, RouterBOARD-Firmware): statt "Backend nicht
+// erreichbar" und "Aktualisierung fehlgeschlagen" einen ehrlichen Zustand zeigen und den Router
+// per GET /session (fragt den Router selbst) zurueckholen, danach alles neu laden. So sieht der
+// Kunde nach Schritt 1 von selbst, ob Schritt 2 aussteht (Audit 19.09., Befunde 3, 5, 8).
+let rebootWatch = null;
+function setRebootUi(rebooting) {
+  document.querySelectorAll("[data-action=update-firmware], #routerboard-upgrade, #routerboard-auto-upgrade, [data-action=reboot]").forEach((el) => { el.disabled = rebooting; });
+}
+function expectReboot(reason) {
+  state.rebooting = true;
+  clearTimeout(rebootWatch);
+  setRebootUi(true);
+  $("#connection-label").innerHTML = `Router startet neu<small>${escapeHtml(reason)}</small>`;
+  $("#connection-dot").style.background = "#d88927";
+  $(".connection-pill").innerHTML = '<span class="live-dot"></span> Router startet neu …';
+  const startedAt = Date.now();
+  const tick = async () => {
+    try {
+      await request("/session");
+      state.rebooting = false;
+      setRebootUi(false);
+      await loadAll();
+      showToast("Der Router ist wieder erreichbar.");
+    } catch (error) {
+      if (Date.now() - startedAt > 4 * 60 * 1000) {
+        state.rebooting = false;
+        setRebootUi(false);
+        setConnection(false);
+        return showToast("Der Router meldet sich seit 4 Minuten nicht. Bitte Strom und LEDs prüfen.");
+      }
+      rebootWatch = window.setTimeout(tick, window.COCKPIT_REBOOT_POLL_MS || 10000);
+    }
+  };
+  rebootWatch = window.setTimeout(tick, window.COCKPIT_REBOOT_FIRST_POLL_MS || 30000);
+}
 const loadStates = new Map();
 function renderLoadStates() {
+  if (state.rebooting) return;
   const entries = [...loadStates];
   const failed = entries.filter(([, value]) => value.status === "error");
   const pending = entries.some(([, value]) => value.status === "pending");
@@ -579,5 +615,5 @@ document.addEventListener("click", (event) => {
   history.replaceState(null, "", `#page-${link.dataset.page}`);
 });
 setupPages();
-window.CockpitCore = { state, load, request, jsonBody, showToast, showError, explainActionError, confirmAction, escapeHtml, $, setConnection, renderSecurityCheck };
+window.CockpitCore = { state, load, request, jsonBody, showToast, showError, explainActionError, confirmAction, escapeHtml, $, setConnection, renderSecurityCheck, expectReboot };
 init();

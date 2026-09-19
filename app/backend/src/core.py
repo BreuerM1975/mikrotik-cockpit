@@ -28,6 +28,7 @@ from flask import request
 from config import load_config
 from routeros import (
     RouterCommandFailed,
+    RouterTimeout,
     RouterUnreachable,
     parse_colon,
     parse_terse,
@@ -795,27 +796,68 @@ def _ipv6_relevant() -> bool | None:
 # (Exit 0, keine Ausgabe) und flasht auch bei gleicher Version. Danach steht ueber dem
 # print die Kommentarzeile ";;; Firmware upgraded successfully, please reboot for changes
 # to take effect!", nach dem Neustart ist sie weg -- das ist der Marker fuer
-# "eingespielt, Neustart fehlt". Geraete ohne RouterBOARD (CHR) antworten "routerboard: no".
+# "eingespielt, Neustart fehlt". Geraete ohne RouterBOARD (CHR) antworten "routerboard: no",
+# x86 kennt das Menue gar nicht ("bad command name", CLI-Referenz "!i386").
+_ROUTERBOARD_KEY_VALUE_RE = re.compile(r"^\s*[\w-]+:\s")
+_FIRMWARE_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:(beta|rc)(\d+))?$", re.IGNORECASE)
+
+
+def _routerboard_reboot_marker(output: str) -> bool:
+    # Der Kommentarblock steht vor der ersten "key: value"-Zeile. RouterOS bricht ihn um; die
+    # Folgezeile beginnt je nach Version mit ";;;" (hAP 7.23.1 live) oder ohne (Doku routerboot.md).
+    # Audit 19.09., Befund 1: nicht an einer einzelnen Zeile haengen bleiben.
+    header = []
+    for line in output.splitlines():
+        if _ROUTERBOARD_KEY_VALUE_RE.match(line):
+            break
+        header.append(line.strip().lstrip(";").strip())
+    text = " ".join(part for part in header if part).lower()
+    return "upgraded successfully" in text or "reboot" in text
+
+
+def _firmware_version_key(value: str | None) -> tuple | None:
+    match = _FIRMWARE_VERSION_RE.match((value or "").strip())
+    if not match:
+        return None
+    major, minor, patch, stage, stage_num = match.groups()
+    stage_rank = {"beta": 0, "rc": 1}.get((stage or "").lower(), 2)
+    return (int(major), int(minor), int(patch or 0), stage_rank, int(stage_num or 0))
+
+
 def routerboard_state() -> dict:
-    output = router("/system routerboard print")
+    try:
+        output = router("/system routerboard print")
+    except RouterCommandFailed as exc:
+        text = str(exc).lower()
+        if "bad command name" in text or "no such command" in text:
+            return {"available": False}
+        raise
     info = parse_colon(output)
+    if not info:
+        return {"available": None, "error": "leere Ausgabe von /system routerboard print"}
     if info.get("routerboard", "yes").strip().lower() == "no":
         return {"available": False}
     current = info.get("current-firmware") or None
     upgrade = info.get("upgrade-firmware") or None
-    reboot_pending = any(
-        line.strip().startswith(";;;") and "reboot" in line.lower()
-        for line in output.splitlines()
-    )
+    # Doku: nur eine HOEHERE upgrade-firmware ist ein ausstehender Schritt 2. Nach einem
+    # RouterOS-Downgrade ist die aktive Firmware neuer als die mitgelieferte -- dann nichts tun
+    # (Audit 19.09., Befund 2).
+    cur_key, up_key = _firmware_version_key(current), _firmware_version_key(upgrade)
+    if cur_key and up_key:
+        upgrade_available, firmware_newer = up_key > cur_key, up_key < cur_key
+    else:
+        upgrade_available = bool(current and upgrade and current != upgrade)
+        firmware_newer = False
     settings = parse_colon(router("/system routerboard settings print"))
-    auto_upgrade = settings.get("auto-upgrade", "").strip().lower() in ("yes", "true")
     return {
         "available": True,
         "current_firmware": current,
         "upgrade_firmware": upgrade,
-        "upgrade_available": bool(current and upgrade and current != upgrade),
-        "reboot_pending": reboot_pending,
-        "auto_upgrade": auto_upgrade,
+        "upgrade_available": upgrade_available,
+        "firmware_newer": firmware_newer,
+        "reboot_pending": _routerboard_reboot_marker(output),
+        "auto_upgrade": settings.get("auto-upgrade", "").strip().lower() in ("yes", "true"),
+        "protected_routerboot": settings.get("protected-routerboot", "").strip().lower() == "enabled",
     }
 
 
