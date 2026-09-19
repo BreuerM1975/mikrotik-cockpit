@@ -3,10 +3,10 @@
 > A live, browser-based management UI for MikroTik RouterOS — with plain-language explanations, safety warnings, and device direct-links. Think WinBox, but for the 80 % of daily tasks.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-218%20passing-brightgreen)](#)
+[![Tests](https://img.shields.io/badge/Tests-231%20passing-brightgreen)](#)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.x-orange)](#)
 
-**Status:** Working prototype — 218 backend tests, security audited, live-verified against RouterOS 7.23.1 on real hardware (MikroTik hAP ac Lite). Not yet a polished commercial product.
+**Status:** Working prototype — 231 backend tests, security audited, live-verified against RouterOS 7.23.1 on real hardware (MikroTik hAP ac Lite). Not yet a polished commercial product.
 
 **Language:** The interface speaks English and German. It follows your browser language and can be switched any time with the EN/DE button in the header.
 
@@ -27,6 +27,16 @@ with neutral ones before publishing.*
 ![demo](screenshots/demo.gif)
 
 60-second walkthrough on YouTube (German voice-over, English UI available in the app): https://www.youtube.com/watch?v=eTpmH4RkWiM
+
+### Free vs. Pro at a glance
+
+| | **Cockpit (this repo)** | **Cockpit Pro** |
+|---|---|---|
+| What you get | Dashboard, devices, Wi-Fi, port forwards, backup, network settings, security check | Everything here, plus firewall, IP services, users, router password, reboot, WireGuard, PPPoE, guest network, firmware updates incl. RouterBOARD step 2 |
+| Price | Free, AGPL v3, complete on its own | $5/month or $49 one-time (that is ten months) via [GitHub Sponsors](https://github.com/sponsors/BreuerM1975) |
+| Where the money goes | | Development time and testing against real hardware; the free tier stays free |
+
+Pro needs a GitHub account, because the private repository is delivered through Sponsors. No account, no Pro for now; if that blocks you, [open an issue](https://github.com/BreuerM1975/mikrotik-cockpit/issues) and say so, it helps me decide whether a second payment route is worth building.
 
 ---
 
@@ -203,7 +213,7 @@ python3 -m unittest discover -s app/backend/src -q
 python3 app/frontend/test-language-static.py
 ```
 
-Current test count: **218 backend tests**, all green. They mock the router, so no hardware is
+Current test count: **231 backend tests**, all green. They mock the router, so no hardware is
 needed.
 
 The interface is written in German and translated at the DOM level: `i18n.js` looks each string up
@@ -218,6 +228,8 @@ directly will see German text. Pull requests in either language are welcome.
 ---
 
 ## From the same author
+
+Start page for all of it (German): https://mikrotik.smarthomeblox.com/start/
 
 - **Mastering MikroTik RouterOS** (English, paperback/hardcover/Kindle): https://www.amazon.com/dp/B0HJYVSF2X — the book explains what every line of a RouterOS config does; Cockpit is the tool for the day after you have read it.
 - **Das deutsche MikroTik Kompendium** (German edition of the same book): https://www.amazon.de/dp/B0H4BR6KJR
