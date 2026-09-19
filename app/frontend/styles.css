@@ -188,3 +188,9 @@
 .wiki-entry p { margin:0; color:var(--muted); font-size:12px; line-height:1.6; }
 @media (max-width:1050px) { .wiki-groups { grid-template-columns:1fr; } }
 .wifi-undo-notice { position:fixed; z-index:30; right:24px; bottom:24px; display:flex; align-items:center; gap:18px; max-width:min(480px,calc(100vw - 32px)); padding:15px 16px; border:1px solid var(--blue); border-radius:12px; background:var(--surface); box-shadow:var(--shadow); }.wifi-undo-notice strong { color:var(--ink); font-size:13px; }.wifi-undo-notice p { margin:4px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }.wifi-undo-notice .secondary-button { flex:0 0 auto; white-space:nowrap; } @media (max-width:620px) { .wifi-undo-notice { right:16px; bottom:16px; align-items:flex-end; gap:10px; } }
+/* Schalter mit Beschriftung daneben (RouterBOARD auto-upgrade, 19.09.2026). `.switch span` gestaltet jeden
+   span im Label als Knopf, deshalb steht der Text ausserhalb des Labels. */
+.switch-row { display:flex; align-items:center; gap:10px; margin:10px 0 0; }
+.switch-row .switch { margin-left:0; flex:0 0 auto; }
+.switch-text { color:var(--muted); font-size:12px; line-height:1.5; }
+

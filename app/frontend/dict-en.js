@@ -142,6 +142,48 @@ window.COCKPIT_DICT_EN = {
   "Updates schließen Sicherheitslücken und verbessern die Stabilität. Während der Installation startet der Router kurz neu.":
     "Updates close security holes and improve stability. The router restarts briefly during installation.",
   "Update starten": "Start update",
+  "Ein Update hat zwei Schritte: RouterOS, dann die RouterBOARD-Firmware. Beides braucht einen Neustart, das Cockpit zeigt dir nach dem ersten, ob der zweite noch fehlt.":
+    "An update has two steps: RouterOS, then the RouterBOARD firmware. Both need a restart; after the first one Cockpit tells you whether the second is still needed.",
+  "RouterBOARD-Stand nicht lesbar": "RouterBOARD status cannot be read",
+  "Nicht verfügbar": "Unavailable",
+  "RouterBOARD-Firmware": "RouterBOARD firmware",
+  "Firmware eingespielt, Neustart fehlt": "Firmware installed, restart still needed",
+  "Jetzt neu starten": "Restart now",
+  "Schritt 2: Firmware anwenden und neu starten": "Step 2: apply firmware and restart",
+  "✓ Aktuell": "✓ Up to date",
+  "Firmware nach RouterOS-Updates automatisch einspielen (ein Neustart bleibt nötig)":
+    "Apply firmware automatically after RouterOS updates (a restart is still needed)",
+  "Der Router startet für RouterOS neu. Danach zeigt das Cockpit, ob die RouterBOARD-Firmware als zweiter Schritt noch angewendet werden muss (zweiter Neustart).":
+    "The router restarts for RouterOS. Afterwards Cockpit shows whether the RouterBOARD firmware still needs to be applied as a second step (second restart).",
+  "RouterBOARD-Firmware anwenden": "Apply RouterBOARD firmware",
+  "Jetzt anwenden und neu starten": "Apply and restart now",
+  "Der Router startet neu und ist kurz nicht erreichbar.": "The router restarts and is briefly unavailable.",
+  "Firmware wird angewendet, der Router startet neu.": "Firmware is being applied; the router is restarting.",
+  "RouterBOARD-Firmware wird nach RouterOS-Updates automatisch eingespielt. Ein weiterer Neustart bleibt nötig.":
+    "RouterBOARD firmware will be applied automatically after RouterOS updates. Another restart is still needed.",
+  "Automatisches Einspielen der RouterBOARD-Firmware ist ausgeschaltet.":
+    "Automatic RouterBOARD firmware updates are switched off.",
+  "Es konnte nicht geprüft werden, ob die RouterBOARD-Firmware zu RouterOS passt.":
+    "It could not be checked whether the RouterBOARD firmware matches RouterOS.",
+  "RouterBOARD-Firmware ist bereits auf dem Stand von RouterOS":
+    "RouterBOARD firmware is already at the RouterOS level",
+  "Installiert die neueste RouterOS-Version. Der Router startet dafür kurz neu, alle Verbindungen werden dabei kurz unterbrochen. Danach zeigt Cockpit, ob die RouterBOARD-Firmware als zweiter Schritt noch ein Update und einen weiteren Neustart braucht.":
+    "Installs the latest RouterOS version. The router restarts briefly and all connections are interrupted. Afterwards Cockpit shows whether the RouterBOARD firmware needs an update and another restart as a second step.",
+  "Ist die Firmware, die direkt beim Starten des MikroTik läuft. Sie wird nach einem RouterOS-Update oft erst im zweiten Schritt angewendet und braucht dann einen weiteren Neustart. Automatisch einspielen bereitet diesen Schritt nach RouterOS-Updates vor, ersetzt den nötigen Neustart aber nicht.":
+    "This is the firmware that runs directly when the MikroTik starts. After a RouterOS update it often needs to be applied in a second step and then requires another restart. Applying it automatically prepares that step after RouterOS updates, but does not replace the required restart.",
+  "'enabled' muss true oder false sein": "'enabled' must be true or false",
+  "Der Router hat das Einspielen der Firmware nicht bestätigt": "The router did not confirm applying the firmware",
+  "Der Router hat die Einstellung nicht übernommen": "The router did not apply the setting",
+  "Der Router nennt keine RouterBOARD-Firmwareversion, die Prüfung entfällt.": "The router reports no RouterBOARD firmware version; the check does not apply.",
+  "Die RouterBOARD-Firmware ist eingespielt, wird aber erst nach einem Neustart aktiv. Starte den Router neu (in Cockpit Pro unter Wartung, sonst in WinBox unter System > Reboot).":
+    "The RouterBOARD firmware is installed but only becomes active after a restart. Restart the router (in Cockpit Pro under Maintenance, otherwise in WinBox under System > Reboot).",
+  "Dieses Gerät hat keine RouterBOARD-Firmware": "This device has no RouterBOARD firmware",
+  "Dieses Gerät hat keine RouterBOARD-Firmware, die Prüfung entfällt.": "This device has no RouterBOARD firmware; the check does not apply.",
+  "Firmware eingespielt, Neustart fehlt.": "Firmware installed, restart still needed.",
+  "Kein RouterBOARD (z. B. CHR).": "No RouterBOARD (e.g. CHR).",
+  "RouterBOARD-Stand konnte nicht gelesen werden.": "RouterBOARD status could not be read.",
+  "Versionsdaten der RouterBOARD-Firmware fehlen.": "RouterBOARD firmware version data is missing.",
+  "{current} aktiv, {upgrade} bereit.": "{current} active, {upgrade} ready.",
   "Konfiguration sichern": "Back up the configuration",
   "Ein Backup hilft dir, nach einem Fehler schnell zu einem funktionierenden Zustand zurückzukehren. Erstelle eines vor größeren Änderungen.":
     "A backup gets you back to a working state quickly after a mistake. Create one before any bigger change.",

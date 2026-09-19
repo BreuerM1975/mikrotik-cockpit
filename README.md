@@ -45,7 +45,7 @@ with neutral ones before publishing.*
 | **Backup** | Export RouterOS backup, download it, restore it |
 | **Network** | Change IP address, DNS servers, DHCP client mode, WAN interface |
 | **DHCP Ranges** | Add and remove DHCP server ranges per interface |
-| **Security check** | Plain-language audit of services, router access, guest isolation, firmware and backup age |
+| **Security check** | Plain-language audit of services, router access, guest isolation, RouterOS and RouterBOARD firmware and backup age |
 
 ### Pro tier (Cockpit Pro, via GitHub Sponsors)
 
@@ -66,7 +66,7 @@ four files into this checkout and can remove them again.
 | **VPN (WireGuard)** | Add peers, download .conf files |
 | **PPPoE** | Set up WAN connection for DSL |
 | **Guest network** | Control guest SSID and isolation |
-| **Firmware** | Check for and install RouterOS updates |
+| **Firmware** | Check for and install RouterOS updates, then apply the RouterBOARD firmware (the second step most people forget) with one click; optional auto-upgrade |
 
 ---
 

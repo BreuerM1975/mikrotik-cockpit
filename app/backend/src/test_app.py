@@ -67,6 +67,16 @@ FAKE_OUTPUT = {
     "/system package update print": (
         '  channel: stable\n  installed-version: 7.22.2\n  latest-version: 7.24.1\n'
     ),
+    # RouterBOARD: Schritt 2 fehlt (Firmware hinkt RouterOS hinterher), kein Neustart-Marker.
+    # Echtes Format 7.23.1 (live 19.09.), Marker-Variante steht in RB_PRINT_REBOOT_PENDING.
+    "/system routerboard print": (
+        '       routerboard: yes\n        board-name: hAP ac lite\n             model: RB952Ui-5ac2nD\n'
+        '     firmware-type: qca9531L\n  factory-firmware: 6.49.13\n  current-firmware: 7.22.2\n'
+        '  upgrade-firmware: 7.24.1\n'
+    ),
+    "/system routerboard settings print": (
+        '              auto-upgrade: no\n                 baud-rate: 115200\n                boot-delay: 2s\n'
+    ),
     '/interface wireguard print terse where name="wg-vpn"': (
         '0  name="wg-vpn" public-key="serverPublicKeyXYZ=" listen-port=13231\n'
     ),
@@ -199,6 +209,18 @@ FAKE_OUTPUT = {
     '/ip service print terse where name="ftp" and dynamic=no': '0  name=ftp port=21 proto=tcp\n',
     '/ip service print terse where name="unbekannt" and dynamic=no': "",
 }
+
+
+RB_PRINT_IN_SYNC = (
+    '       routerboard: yes\n             model: RB952Ui-5ac2nD\n  factory-firmware: 6.49.13\n'
+    '  current-firmware: 7.24.1\n  upgrade-firmware: 7.24.1\n'
+)
+RB_PRINT_REBOOT_PENDING = (
+    '                ;;; Firmware upgraded successfully, please reboot for changes \n'
+    '                ;;; to take effect!                                           \n'
+    + RB_PRINT_IN_SYNC
+)
+RB_PRINT_NO_ROUTERBOARD = '  routerboard: no\n'
 
 
 def fake_router(command):
@@ -1295,6 +1317,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(by_id["services"]["status"], "warn")
         self.assertEqual(by_id["input_firewall"]["status"], "warn")
         self.assertEqual(by_id["firmware"]["status"], "warn")
+        self.assertEqual(by_id["routerboard"]["status"], "warn")
+        self.assertIn("7.22.2 aktiv, 7.24.1 bereit", by_id["routerboard"]["detail"])
         self.assertEqual(by_id["guest_isolation"]["status"], "unknown")
         self.assertEqual(by_id["backup"]["status"], "warn")
         self.assertEqual(by_id["default_user"]["status"], "warn")
@@ -1340,6 +1364,8 @@ class ApiTest(unittest.TestCase):
                 return ""
             if command == "/system package update print":
                 return "  installed-version: 7.24.1\n  latest-version: 7.24.1\n"
+            if command == "/system routerboard print":
+                return RB_PRINT_IN_SYNC
             if command == "/user print terse":
                 return (
                     " 0 X comment=system default user name=admin group=full inactivity-timeout=10m "
@@ -1359,6 +1385,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(by_id["services"]["status"], "good")
         self.assertEqual(by_id["input_firewall"]["status"], "good")
         self.assertEqual(by_id["firmware"]["status"], "good")
+        self.assertEqual(by_id["routerboard"]["status"], "good")
         self.assertEqual(by_id["backup"]["status"], "good")
         self.assertEqual(by_id["default_user"]["status"], "good")
         self.assertEqual(by_id["guest_isolation"]["status"], "unknown")
@@ -1451,6 +1478,42 @@ class ApiTest(unittest.TestCase):
             resp = self.client.get("/api/v1/security-check", headers=headers)
         by_id = {c["id"]: c for c in resp.get_json()["checks"]}
         self.assertEqual(by_id["firmware"]["status"], "unknown")
+
+    def _routerboard_check(self, rb_output):
+        session_id = "security-check-rb-session"
+        core_module.SESSIONS[session_id] = {
+            "host": "secheck-rb-host", "user": "admin", "password": "x", "ssh_port": 22,
+        }
+
+        def rb_router(command):
+            if command == "/system routerboard print":
+                if isinstance(rb_output, Exception):
+                    raise rb_output
+                return rb_output
+            return fake_router(command)
+
+        with patch("core.router", side_effect=rb_router):
+            resp = self.client.get("/api/v1/security-check", headers={"X-Cockpit-Session": session_id})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        return {c["id"]: c for c in data["checks"]}["routerboard"], data
+
+    def test_security_check_routerboard_reboot_pending_is_warn(self):
+        check, _ = self._routerboard_check(RB_PRINT_REBOOT_PENDING)
+        self.assertEqual(check["status"], "warn")
+        self.assertIn("Neustart fehlt", check["detail"])
+        self.assertIn("neu", check["plain"])
+
+    def test_security_check_routerboard_no_routerboard_is_unknown_and_unrated(self):
+        check, data = self._routerboard_check(RB_PRINT_NO_ROUTERBOARD)
+        self.assertEqual(check["status"], "unknown")
+        self.assertIn("CHR", check["detail"])
+        rated = [c for c in data["checks"] if c["status"] != "unknown"]
+        self.assertNotIn("routerboard", [c["id"] for c in rated])
+
+    def test_security_check_routerboard_read_error_is_unknown(self):
+        check, _ = self._routerboard_check(RouterCommandFailed("boom"))
+        self.assertEqual(check["status"], "unknown")
 
     @patch("core.router", side_effect=fake_router)
     def test_security_check_backup_empty_file_is_not_good(self, _mock):

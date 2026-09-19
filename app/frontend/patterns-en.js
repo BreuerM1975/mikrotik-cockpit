@@ -48,7 +48,15 @@ window.COCKPIT_PATTERNS_EN = [
   [/^'room' darf höchstens (.+)$/, "'room' may be at most $1"],
   [/^Neue SSID für (.+)$/, "New SSID for $1"],
   [/^Neues Passwort für (.+)$/, "New password for $1"],
+  [/^RouterOS ist aktualisiert, die RouterBOARD-Firmware \(Schritt 2 eines Updates\) noch nicht: (.+) läuft, (.+) liegt bereit\. Wende sie an und starte neu \(in Cockpit Pro unter Wartung > Firmware, sonst in WinBox unter System > RouterBOARD > Upgrade, danach Neustart\)\.$/,
+    "RouterOS is updated, the RouterBOARD firmware (step 2 of an update) is not yet: $1 is running, $2 is ready. Apply it and restart (in Cockpit Pro under Maintenance > Firmware, otherwise in WinBox under System > RouterBOARD > Upgrade, then restart)."],
+  // Das generische RouterOS-Muster muss hinter dem langen RouterBOARD-Satz stehen (erster Treffer gewinnt).
   [/^RouterOS (.+)$/, "RouterOS $1"],
+  [/^(.+) aktiv, (.+) bereit\.$/, "$1 active, $2 ready."],
+  [/^(.+) passt zu RouterOS\.$/, "$1 matches RouterOS."],
+  [/^Die RouterBOARD-Firmware ist auf dem Stand von RouterOS \((.+)\), Schritt 2 des Updates ist erledigt\.$/,
+    "The RouterBOARD firmware is at the RouterOS level ($1); step 2 of the update is done."],
+  [/^(.+) bereit$/, "$1 ready"],
   // Benutzerverwaltung (Pro): Namen und Aktionen werden zur Laufzeit eingesetzt. Bei den drei
   // Sperrmeldungen ersetzt eine Funktion das deutsche Verb, weil ein "$1" es unuebersetzt liesse
   // (unbekanntes Verb bleibt stehen, damit die statische Pruefung mit Platzhaltern greift).

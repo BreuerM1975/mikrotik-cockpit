@@ -1465,6 +1465,42 @@ def _security_check_default_user() -> dict:
                      "System > Users), sobald du dich mit dem eigenen Zugang einmal angemeldet hast."}
 
 
+def _security_check_routerboard() -> dict:
+    label = "RouterBOARD-Firmware"
+    try:
+        state = core.routerboard_state()
+    except (RouterCommandFailed, RouterUnreachable):
+        return {"id": "routerboard", "label": label, "status": "unknown",
+                "detail": "RouterBOARD-Stand konnte nicht gelesen werden.",
+                "plain": "Es konnte nicht geprüft werden, ob die RouterBOARD-Firmware zu RouterOS passt."}
+    if not state.get("available"):
+        return {"id": "routerboard", "label": label, "status": "unknown",
+                "detail": "Kein RouterBOARD (z. B. CHR).",
+                "plain": "Dieses Gerät hat keine RouterBOARD-Firmware, die Prüfung entfällt."}
+    current, upgrade = state.get("current_firmware"), state.get("upgrade_firmware")
+    if state["reboot_pending"]:
+        return {"id": "routerboard", "label": label, "status": "warn",
+                "detail": "Firmware eingespielt, Neustart fehlt.",
+                "plain": "Die RouterBOARD-Firmware ist eingespielt, wird aber erst nach einem Neustart "
+                         "aktiv. Starte den Router neu (in Cockpit Pro unter Wartung, sonst in WinBox "
+                         "unter System > Reboot)."}
+    if not current or not upgrade:
+        return {"id": "routerboard", "label": label, "status": "unknown",
+                "detail": "Versionsdaten der RouterBOARD-Firmware fehlen.",
+                "plain": "Der Router nennt keine RouterBOARD-Firmwareversion, die Prüfung entfällt."}
+    if state["upgrade_available"]:
+        return {"id": "routerboard", "label": label, "status": "warn",
+                "detail": f"{current} aktiv, {upgrade} bereit.",
+                "plain": f"RouterOS ist aktualisiert, die RouterBOARD-Firmware (Schritt 2 eines Updates) "
+                         f"noch nicht: {current} läuft, {upgrade} liegt bereit. Wende sie an und starte "
+                         "neu (in Cockpit Pro unter Wartung > Firmware, sonst in WinBox unter System > "
+                         "RouterBOARD > Upgrade, danach Neustart)."}
+    return {"id": "routerboard", "label": label, "status": "good",
+            "detail": f"{current} passt zu RouterOS.",
+            "plain": f"Die RouterBOARD-Firmware ist auf dem Stand von RouterOS ({current}), Schritt 2 "
+                     "des Updates ist erledigt."}
+
+
 @bp.get("/api/v1/security-check")
 def security_check():
     checks = [
@@ -1473,6 +1509,7 @@ def security_check():
         _security_check_input_firewall(),
         _security_check_guest_isolation(),
         _security_check_firmware(),
+        _security_check_routerboard(),
         _security_check_backup(),
     ]
     rated = [c for c in checks if c["status"] != "unknown"]

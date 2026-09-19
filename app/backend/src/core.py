@@ -790,6 +790,35 @@ def _ipv6_relevant() -> bool | None:
     return settings.get("disable-ipv6", "no").strip().lower() != "yes"
 
 
+# RouterBOARD-Firmware (Schritt 2 eines MikroTik-Updates). Live am hAP 19.09.2026:
+# `/system routerboard upgrade` laeuft ueber den SSH-Befehlskanal ohne Rueckfrage durch
+# (Exit 0, keine Ausgabe) und flasht auch bei gleicher Version. Danach steht ueber dem
+# print die Kommentarzeile ";;; Firmware upgraded successfully, please reboot for changes
+# to take effect!", nach dem Neustart ist sie weg -- das ist der Marker fuer
+# "eingespielt, Neustart fehlt". Geraete ohne RouterBOARD (CHR) antworten "routerboard: no".
+def routerboard_state() -> dict:
+    output = router("/system routerboard print")
+    info = parse_colon(output)
+    if info.get("routerboard", "yes").strip().lower() == "no":
+        return {"available": False}
+    current = info.get("current-firmware") or None
+    upgrade = info.get("upgrade-firmware") or None
+    reboot_pending = any(
+        line.strip().startswith(";;;") and "reboot" in line.lower()
+        for line in output.splitlines()
+    )
+    settings = parse_colon(router("/system routerboard settings print"))
+    auto_upgrade = settings.get("auto-upgrade", "").strip().lower() in ("yes", "true")
+    return {
+        "available": True,
+        "current_firmware": current,
+        "upgrade_firmware": upgrade,
+        "upgrade_available": bool(current and upgrade and current != upgrade),
+        "reboot_pending": reboot_pending,
+        "auto_upgrade": auto_upgrade,
+    }
+
+
 def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filter") -> bool | None:
     """Bestätigt Isolation nur über eine aktive, konkrete Forward-Drop-Regel.
 
