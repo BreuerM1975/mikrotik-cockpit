@@ -169,5 +169,8 @@ else:
 if __name__ == "__main__":
     # Nur lokal erreichbar -- das Verbinden-Modell (siehe dem Verbinden-Modell)
     # braucht keinen Zugriff aus dem Heimnetz mehr, Cockpit läuft wie WinBox auf dem Rechner
-    # des Kunden selbst.
-    app.run(host="127.0.0.1", port=cfg.backend_port, debug=False, use_reloader=False)
+    # des Kunden selbst. Einzige Ausnahme: im Container (Dockerfile) muss der Prozess auf allen
+    # Adressen lauschen, sonst kommt der Port nicht aus dem Container heraus; dort setzt das
+    # Image COCKPIT_BIND_HOST=0.0.0.0. Ohne die Variable bleibt es bei 127.0.0.1.
+    app.run(host=os.environ.get("COCKPIT_BIND_HOST", "127.0.0.1"), port=cfg.backend_port,
+            debug=False, use_reloader=False)

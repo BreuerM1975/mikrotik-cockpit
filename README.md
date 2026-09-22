@@ -131,6 +131,30 @@ notification.
 
 Enter your router's IP address, username, and password — just like WinBox.
 
+### Run in Docker
+
+Prefer to run Cockpit on a NAS, a Proxmox host or a small home server? The repository ships a
+`Dockerfile` and a `docker-compose.yml`:
+
+```bash
+git clone https://github.com/BreuerM1975/mikrotik-cockpit.git
+cd mikrotik-cockpit
+docker compose up --build -d
+```
+
+Then open `http://<docker-host>:8787/` from any browser in your home network and connect to
+your router as usual. Backups, the router's SSH host key (`known_hosts`) and the device/room
+mapping are kept in the named volume `cockpit-data`; the image itself holds no credentials.
+After a `git pull`, run `docker compose up --build -d` again to rebuild.
+
+Two things to know: inside the container Cockpit listens on all interfaces (that is what
+`COCKPIT_BIND_HOST=0.0.0.0` in the Dockerfile does), so the page is reachable from your LAN.
+Anyone who opens it still needs your router's username and password, but keep port 8787 inside
+your home network and never forward it from the internet. If you only want it on the Docker
+host itself (for example behind a reverse proxy with its own login), change the port mapping to
+`"127.0.0.1:8787:8787"`. Cockpit Pro works the same way: run `install-pro.sh` against your
+checkout first, then build the image.
+
 ### First-time test
 
 Don't have a router handy? You can't easily test Cockpit without one — it connects *live* to your RouterOS device. If you have a MikroTik in your lab or homelab, that's all you need.
@@ -172,7 +196,7 @@ Your MikroTik Router (RouterOS)
 
 ## Security
 
-- **Local only** — backend binds to `127.0.0.1` (not accessible from the LAN)
+- **Local only** — backend binds to `127.0.0.1` (not accessible from the LAN); the Docker image is the one exception and says so above
 - **No stored credentials** — passwords live in memory, gone when you close the session
 - **No cloud dependency** — no account, no telemetry, no central server
 - **Audit completed** — 18 findings, P0 and P1 closed. See `SHOW.md` for details

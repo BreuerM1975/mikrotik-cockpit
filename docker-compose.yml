@@ -1,0 +1,15 @@
+services:
+  cockpit:
+    build: .
+    container_name: mikrotik-cockpit
+    restart: unless-stopped
+    ports:
+      # Reachable from your LAN on port 8787. Anyone who opens the page still needs the
+      # router's own username and password. Keep the port inside your home network; to expose
+      # it only on the Docker host itself (e.g. behind a reverse proxy), use "127.0.0.1:8787:8787".
+      - "8787:8787"
+    volumes:
+      - cockpit-data:/data
+
+volumes:
+  cockpit-data:

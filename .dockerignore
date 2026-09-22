@@ -1,0 +1,9 @@
+.git
+.venv
+venv
+dist
+screenshots
+assets
+**/__pycache__
+**/*.pyc
+*.md
