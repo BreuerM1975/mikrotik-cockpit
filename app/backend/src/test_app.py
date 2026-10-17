@@ -674,6 +674,36 @@ class ApiTest(unittest.TestCase):
             "routing": {"supported": True, "configured": False},
         })
 
+    @patch("core.router")
+    def test_capabilities_recognise_the_newer_wifi_driver(self, mock_router):
+        # Live am wAP ax (RouterOS 7.24.5, 17.10.2026) gefunden: dessen Funkschnittstellen
+        # stehen in "/interface print" als type=wifi, der Filter auf type="wlan" liefert nichts.
+        # Vorher meldete das Cockpit auf dieser Hardware "kein unterstuetzter WLAN-Treiber",
+        # waehrend die WLAN-Seite die Netze gleichzeitig auflistete.
+        def fake(command):
+            if command == "/interface wireless print terse":
+                raise RouterCommandFailed("bad command name wireless")
+            if command == "/interface wifi print terse":
+                return '0 MBR default-name=wifi1 name=wifi1\n1 MBR default-name=wifi2 name=wifi2\n'
+            return ""
+        mock_router.side_effect = fake
+        resp = self.client.get("/api/v1/capabilities", headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.get_json()["wifi"],
+            {"supported": True, "configured": True, "drivers": ["wifi"]},
+        )
+
+    @patch("core.router")
+    def test_capabilities_stay_negative_without_any_radio(self, mock_router):
+        # Gegenprobe: ein Geraet ohne Funk (CHR) darf weiterhin "nicht unterstuetzt" melden.
+        mock_router.side_effect = lambda command: ""
+        resp = self.client.get("/api/v1/capabilities", headers=self.headers)
+        self.assertEqual(
+            resp.get_json()["wifi"],
+            {"supported": False, "configured": False, "drivers": []},
+        )
+
     @patch("core.router", side_effect=fake_router)
     def test_router_identity_put(self, mock_router):
         resp = self.client.put(

@@ -476,6 +476,12 @@ function renderLoadStates() {
   notice.textContent = failed.map(([path, value]) => `${path}: ${value.message} Vorhandene Daten können veraltet sein.`).join(" ");
   renderDeviceBar();
 }
+// Manche Endpunkte antworten mit 404 "das gibt es auf diesem Geraet nicht": ein wAP ax ohne
+// WireGuard, ein Router ohne Gastnetz. Das ist kein fehlgeschlagener Ladevorgang, sondern eine
+// Eigenschaft des Geraets -- als Fehler gezaehlt faerbt es die Geraetekachel dauerhaft gelb und
+// meldet "Aktualisierung fehlgeschlagen", obwohl nichts fehlgeschlagen ist. Die
+// Faehigkeiten-Karte sagt dasselbe bereits ruhig und an der richtigen Stelle.
+const FEATURE_ABSENT_CODES = new Set(["device_not_found"]);
 async function load(path, assign, render) {
   const routerId = activeId;
   const router = routers.get(routerId);
@@ -491,8 +497,12 @@ async function load(path, assign, render) {
     return data;
   } catch (error) {
     if (isCurrent(routerId, session) && router.loadStates.get(path) === ticket) {
-      ticket.status = "error"; ticket.message = explainActionError(error);
-      showError(error);
+      if (FEATURE_ABSENT_CODES.has(error.code)) {
+        ticket.status = "absent";
+      } else {
+        ticket.status = "error"; ticket.message = explainActionError(error);
+        showError(error);
+      }
     }
     throw error;
   } finally {

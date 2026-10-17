@@ -231,13 +231,20 @@ def capabilities():
         wifi_drivers.append("wireless")
     if wifi_rows:
         wifi_drivers.append("wifi")
+    # Live am wAP ax (RouterOS 7.24.5, 17.10.2026) gefunden: Geraete mit dem neueren
+    # wifi-Treiber fuehren ihre Funkschnittstellen in "/interface print" als type=wifi, nicht
+    # als type=wlan. Die Pruefung auf type="wlan" allein meldete deshalb auf jeder aktuellen
+    # AX-Hardware "kein unterstuetzter WLAN-Treiber", obwohl "/interface wifi print" die Netze
+    # auflistet und GET /wifi sie auch ausliefert -- die Oberflaeche behauptete das Gegenteil
+    # dessen, was sie selbst anzeigte.
+    radios_present = bool(wlan_rows) or bool(wireless_rows) or bool(wifi_rows)
     return jsonify({
         # Meldet, ob dieser Backend-Prozess ueberhaupt routes_pro.py geladen hat -- siehe
         # app.py. Im oeffentlichen Repo fehlt die Datei schlicht, "tier" bleibt "basis".
         "tier": current_app.config.get("COCKPIT_TIER", "basis"),
         "wifi": {
-            "supported": wlan_supported and bool(wlan_rows),
-            "configured": bool(wlan_rows),
+            "supported": (wlan_supported or wireless_supported or wifi_supported) and radios_present,
+            "configured": radios_present,
             "drivers": wifi_drivers,
         },
         "wireguard": {
