@@ -1384,9 +1384,15 @@ def _security_check_guest_isolation() -> dict:
             "detail": " ".join(detail_parts), "plain": plain}
 
 
-def _security_check_firmware() -> dict:
+def _security_check_firmware(online: bool = True) -> dict:
+    # "check-for-updates" fragt online bei MikroTik nach. Fuer die Flottenuebersicht wird das
+    # abgeschaltet (online=False): dort wuerde bei jedem Aufruf jedes Geraet nach draussen
+    # telefonieren, und der Aufruf dauert auf dem Router selbst merklich. Ohne frische Abfrage
+    # zaehlt, was der Router zuletzt weiss -- fehlt der Vergleichswert, ist das Ergebnis
+    # "unknown" und faerbt den Score nicht faelschlich gruen.
     try:
-        core.router("/system package update check-for-updates")
+        if online:
+            core.router("/system package update check-for-updates")
         info = parse_colon(core.router("/system package update print"))
     except (RouterCommandFailed, RouterUnreachable):
         return {"id": "firmware", "label": "Firmware aktuell", "status": "unknown",
@@ -1530,21 +1536,32 @@ def _security_check_routerboard() -> dict:
                      "des Updates ist erledigt."}
 
 
-@bp.get("/api/v1/security-check")
-def security_check():
+def security_summary(online: bool = True) -> dict:
+    """Sicherheits-Pruefungen und Score des aktuell gebundenen Geraets.
+
+    Eigene Funktion, weil die Flottenuebersicht denselben Score je Geraet braucht und ihn
+    nicht ein zweites Mal berechnen soll. ``online=False`` verzichtet auf die
+    Update-Abfrage beim Hersteller -- siehe _security_check_firmware().
+    """
     checks = [
         _security_check_service_hygiene(),
         _security_check_default_user(),
         _security_check_input_firewall(),
         _security_check_guest_isolation(),
-        _security_check_firmware(),
+        _security_check_firmware(online=online),
         _security_check_routerboard(),
         _security_check_backup(),
     ]
     rated = [c for c in checks if c["status"] != "unknown"]
     good = sum(1 for c in rated if c["status"] == "good")
     score = round(100 * good / len(rated)) if rated else None
-    return jsonify({"score": score, "checks": checks})
+    return {"score": score, "checks": checks, "good": good, "rated": len(rated)}
+
+
+@bp.get("/api/v1/security-check")
+def security_check():
+    summary = security_summary()
+    return jsonify({"score": summary["score"], "checks": summary["checks"]})
 
 
 # Verifizierte IEEE-OUI-Praefixe (recherchiert 08.09.2026 gegen maclookup.app/netify.ai,

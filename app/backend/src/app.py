@@ -149,7 +149,10 @@ def add_cors_headers(response):
     # "X-Cockpit-Token" ist ein Relikt aus der Zeit vor dem Verbinden-Modell (siehe
     # dem Verbinden-Modell) -- Audit A18, 09.09.: nur noch "X-Cockpit-Session"
     # ist gueltig, der alte Header-Name gehoert hier nicht mehr rein.
-    response.headers["Access-Control-Allow-Headers"] = "X-Cockpit-Session, Content-Type"
+    # "X-Cockpit-Sessions" (Plural) traegt die Sitzungen der Flottenabfrage. Bewusst ein
+    # Header und keine Query-Parameter: der Entwicklungsserver schreibt jeden Pfad ins
+    # Zugriffsprotokoll, Sitzungskennungen haetten dort nichts zu suchen.
+    response.headers["Access-Control-Allow-Headers"] = "X-Cockpit-Session, X-Cockpit-Sessions, Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Expose-Headers"] = "X-Cockpit-Build"
     response.headers["X-Cockpit-Build"] = BUILD_ID

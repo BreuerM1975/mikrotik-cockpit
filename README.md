@@ -32,7 +32,7 @@ with neutral ones before publishing.*
 
 | | **Cockpit (this repo)** | **Cockpit Pro** |
 |---|---|---|
-| What you get | Dashboard, devices, Wi-Fi, port forwards, backup, network settings, security check | Everything here, plus firewall, IP services, users, router password, reboot, WireGuard, PPPoE, guest network, firmware updates incl. RouterBOARD step 2 |
+| What you get | Dashboard, devices, Wi-Fi, port forwards, backup, network settings, security check | Everything here, plus the fleet page (all connected devices in one table), firewall, IP services, users, router password, reboot, WireGuard, PPPoE, guest network, firmware updates incl. RouterBOARD step 2 |
 | Price | Free, AGPL v3, complete on its own | $5/month or $49 one-time (that is ten months) via [GitHub Sponsors](https://github.com/sponsors/BreuerM1975) |
 | Where the money goes | | Development time and testing against real hardware; the free tier stays free |
 

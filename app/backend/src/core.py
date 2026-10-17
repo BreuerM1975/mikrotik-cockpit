@@ -17,6 +17,7 @@ Basis ist). Deshalb leben sie hier statt in `routes_pro.py`, obwohl die Tabelle 
 nicht explizit als "geteilt" auffuehrt.
 """
 
+import contextlib
 import ipaddress
 import json
 import os
@@ -67,7 +68,28 @@ class SessionGone(Exception):
     """Die Sitzung war bei der Vorpruefung noch da und ist beim Routerzugriff weg."""
 
 
+# Die Flottenabfrage spricht mehrere Geraete nebenlaeufig an. In einem Arbeitsthread gibt es
+# keinen Flask-Request, aus dem current_conn() die Sitzung lesen koennte -- und es waere auch
+# die falsche, denn jeder Thread meint ein anderes Geraet. Mit dieser Bindung arbeiten alle
+# bestehenden Pruefungen (Sicherheits-Check, Firmware, Status) unveraendert weiter, nur eben
+# gegen das Geraet dieses Threads. Dasselbe Prinzip wie der state-Proxy in der Oberflaeche.
+_bound_conn = threading.local()
+
+
+@contextlib.contextmanager
+def use_connection(conn: dict):
+    previous = getattr(_bound_conn, "conn", None)
+    _bound_conn.conn = conn
+    try:
+        yield conn
+    finally:
+        _bound_conn.conn = previous
+
+
 def current_conn() -> dict:
+    bound = getattr(_bound_conn, "conn", None)
+    if bound is not None:
+        return bound
     # Zwischen require_session() und diesem Zugriff kann ein /disconnect liegen. Mit mehreren
     # gleichzeitig verbundenen Geraeten ist das kein Sonderfall mehr, sondern der Normalfall:
     # wird ein Geraet getrennt, waehrend seine Abfragen noch laufen, findet die laufende

@@ -10,6 +10,10 @@ window.COCKPIT_PATTERNS_EN = [
   [/^Zuletzt geprüft: (.+)$/, "Last checked: $1"],
   [/^(\d+) von (\d+) Prüfungen bestanden$/, "$1 of $2 checks passed"],
   [/^Backend nicht erreichbar unter (.+)$/, "Backend unreachable at $1"],
+  [/^(\d+) von 100$/, "$1 of 100"],
+  [/^Es sind höchstens (\d+) Geräte je Abfrage möglich$/, "At most $1 devices per request"],
+  [/^Nicht alle Geräte laufen auf demselben RouterOS-Stand\. Neuester Stand in dieser Flotte: (.+)\.$/,
+    "Not all devices run the same RouterOS version. The newest in this fleet is $1."],
   // Der Sonderfall muss vor dem allgemeinen Muster stehen, sonst bliebe "einem Gerät" deutsch.
   [/^Die Verbindung zu einem Gerät ist abgelaufen\.$/, "The connection to a device has expired."],
   [/^Die Verbindung zu (.+) ist abgelaufen\.$/, "The connection to $1 has expired."],

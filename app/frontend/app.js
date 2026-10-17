@@ -73,7 +73,8 @@ function applyTierUi() {
   // versehentlich eine Pro-Route berühren. Die endgültige öffentliche Ausgabe
   // enthält diese DOM-Blöcke nicht; diese Schutzschicht hält auch einen lokalen
   // Basis-Checkout mit noch altem HTML ehrlich.
-  document.querySelectorAll("#guest, #pppoe, #firewall, #services, #users, #vpn").forEach((element) => element.remove());
+  document.querySelectorAll("#guest, #pppoe, #firewall, #services, #users, #vpn, #fleet").forEach((element) => element.remove());
+  document.querySelectorAll('.nav-link[data-page="fleet"], [data-page-view="fleet"]').forEach((element) => element.remove());
   $("#firmware-current")?.closest(".maintenance-card")?.remove();
   $("#router-password-form")?.closest(".maintenance-card")?.remove();
   document.querySelectorAll('[data-onboarding-page="guest"], [data-onboarding-page="maintenance"]').forEach((button) => button.remove());
@@ -794,6 +795,9 @@ function showPage(pageName) {
   document.querySelectorAll(".nav-link[data-page]").forEach((link) => link.classList.toggle("active", link.dataset.page === pageName));
   document.querySelector(".main-content")?.scrollTo({ top: 0, behavior: "smooth" });
   window.scrollTo({ top: 0, behavior: "smooth" });
+  // Seiten, die erst beim Oeffnen Daten holen (Flotte), haengen sich hier ein -- so fragt das
+  // Cockpit nicht bei jeder Aktualisierung alle Geraete ab.
+  window.CockpitPro?.onPageShown?.(pageName);
 }
 function setupPages() {
   const main = $(".main-content");
@@ -804,11 +808,14 @@ function setupPages() {
     network: ["devices", "network", "dhcp-ranges", "pppoe"],
     security: ["security-check", "forwards", "firewall", "services", "users"],
     maintenance: ["maintenance"],
+    fleet: ["fleet"],
     help: ["faq", "wiki"],
   };
   const sections = new Map([...main.querySelectorAll("section[id]")].map((section) => [section.id, section]));
   const wrappers = new Map();
-  const pages = Object.keys(groups).map((pageName) => {
+  // Eine Seite entsteht nur, wenn es ihre Abschnitte wirklich gibt. Im Basis-Stand fehlt
+  // z.B. der Flotten-Abschnitt -- dann darf auch kein leerer Menuepunkt entstehen.
+  const pages = Object.keys(groups).filter((pageName) => groups[pageName].some((id) => sections.has(id))).map((pageName) => {
     const page = document.createElement("div");
     page.className = "page-view hidden";
     page.dataset.pageView = pageName;
@@ -834,5 +841,5 @@ document.addEventListener("click", (event) => {
   history.replaceState(null, "", `#page-${link.dataset.page}`);
 });
 setupPages();
-window.CockpitCore = { state, load, request, jsonBody, showToast, showError, explainActionError, confirmAction, escapeHtml, $, setConnection, renderSecurityCheck, expectReboot };
+window.CockpitCore = { state, load, request, jsonBody, showToast, showError, explainActionError, confirmAction, escapeHtml, $, setConnection, renderSecurityCheck, expectReboot, routers, activeDeviceId: () => activeId };
 init();
