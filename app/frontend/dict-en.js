@@ -28,6 +28,11 @@ window.COCKPIT_DICT_EN = {
   "Hell": "Light",
   "Farbschema wechseln": "Switch colour scheme",
   "Verbindung trennen": "Disconnect",
+  "Alle Verbindungen trennen": "Disconnect all devices",
+  "Verbundene MikroTik-Geräte": "Connected MikroTik devices",
+  "Dieses Gerät trennen": "Disconnect this device",
+  "+ Gerät": "+ Device",
+  "Die bereits verbundenen Geräte bleiben offen.": "The devices already connected stay open.",
   "MIKROTIK COCKPIT · PROTOTYP": "MIKROTIK COCKPIT · PROTOTYPE",
   "Lokales Backend · Änderungen werden am Router gespeichert":
     "Local backend · changes are saved on the router",
@@ -507,6 +512,7 @@ window.COCKPIT_DICT_EN = {
     "The connection to the router has expired. Please connect again.",
   "Die vorige Verbindung ist nicht mehr aktiv. Bitte erneut verbinden.":
     "The previous connection is no longer active. Please connect again.",
+  "Es ist kein Gerät verbunden.": "No device is connected.",
   "Die Eingabe ist unvollständig oder ungültig. Bitte prüfe die markierten Werte.":
     "The input is incomplete or invalid. Please check the highlighted values.",
   "Der Eintrag wurde nicht gefunden. Er wurde möglicherweise bereits geändert oder entfernt.":

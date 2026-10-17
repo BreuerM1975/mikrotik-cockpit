@@ -85,6 +85,15 @@ def handle_command_failed(exc):
     }), 502
 
 
+@app.errorhandler(core.SessionGone)
+def handle_session_gone(exc):
+    # Siehe core.current_conn(): die Sitzung wurde waehrend dieser Anfrage getrennt.
+    return jsonify({
+        "error": "not_connected",
+        "message": "Keine aktive Verbindung. Bitte zuerst verbinden.",
+    }), 401
+
+
 @app.before_request
 def require_session():
     # Die Oberfläche (statische Dateien) darf immer laden -- sonst käme man nicht mal bis

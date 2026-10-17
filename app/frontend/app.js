@@ -1,6 +1,45 @@
 const defaultApiBase = window.location.port === "8787" ? `${window.location.origin}/api/v1` : "http://127.0.0.1:8787/api/v1";
 const API_BASE = (window.COCKPIT_BACKEND_URL || localStorage.getItem("cockpitBackendUrl") || defaultApiBase).replace(/\/$/, "");
-const state = { wifi: [], devices: [], forwards: [], backups: [], peers: [], vpnInterfaces: [], vpnInterfaceError: null, wanInterfaces: [], wanInterfaceError: null, pppoe: [], firewall: { forward: [], input: [], nat: [] }, services: [], users: [], guest: null, firmware: null, status: null, capabilities: null, network: null, dhcpRanges: [], leases: [], session: null, securityCheck: null, onboardingPage: "status" };
+// --- Mehrere Geraete gleichzeitig -------------------------------------------------------
+// Jedes verbundene Geraet hat seinen eigenen Datensatz und seine eigenen Ladezustaende.
+// `state` ist ein Proxy auf das gerade aktive Geraet: so arbeiten die rund 160 bestehenden
+// `state.`-Zugriffe unveraendert weiter, koennen aber nicht mehr versehentlich die Daten
+// zweier Router vermischen -- der gefaehrlichste Fehler dieses Umbaus waere eine
+// Firewall-Regel, die im falschen Geraet landet. `capabilities` und `onboardingPage`
+// gehoeren dem Cockpit selbst und bleiben deshalb global.
+const MAX_ROUTERS = 16;
+const GLOBAL_FIELDS = new Set(["capabilities", "onboardingPage"]);
+const globalState = { capabilities: null, onboardingPage: "status" };
+const routers = new Map();
+let activeId = null;
+let routerCounter = 0;
+const emptyRouterData = () => ({ wifi: [], devices: [], forwards: [], backups: [], peers: [], vpnInterfaces: [], vpnInterfaceError: null, wanInterfaces: [], wanInterfaceError: null, pppoe: [], firewall: { forward: [], input: [], nat: [] }, services: [], users: [], guest: null, firmware: null, status: null, network: null, dhcpRanges: [], leases: [], securityCheck: null, rebooting: false });
+// Rueckfall, solange kein Geraet verbunden ist: die Render-Funktionen lesen dann Leerwerte
+// statt undefined, genau wie beim frueheren globalen state direkt nach dem Seitenaufbau.
+const detachedData = emptyRouterData();
+const activeRouter = () => routers.get(activeId) || null;
+const state = new Proxy({}, {
+  get(target, key) {
+    if (GLOBAL_FIELDS.has(key)) return globalState[key];
+    const router = routers.get(activeId);
+    if (key === "session") return router ? router.session : null;
+    return (router ? router.data : detachedData)[key];
+  },
+  set(target, key, value) {
+    if (GLOBAL_FIELDS.has(key)) { globalState[key] = value; return true; }
+    const router = routers.get(activeId);
+    // Ohne aktives Geraet lieber verwerfen als zwischenspeichern: ein zwischengespeicherter
+    // Wert wuerde spaeter beim naechsten Geraet auftauchen und dort falsch aussehen.
+    if (!router) return true;
+    if (key === "session") router.session = value;
+    else router.data[key] = value;
+    return true;
+  },
+  has(target, key) { return GLOBAL_FIELDS.has(key) || key === "session" || key in (routers.get(activeId)?.data || detachedData); },
+  deleteProperty(target, key) { const router = routers.get(activeId); if (router) delete router.data[key]; return true; },
+  ownKeys() { return [...GLOBAL_FIELDS, "session", ...Object.keys(routers.get(activeId)?.data || detachedData)]; },
+  getOwnPropertyDescriptor(target, key) { return { enumerable: true, configurable: true, writable: true, value: this.get(target, key) }; },
+});
 
 const $ = (selector) => document.querySelector(selector);
 let proModulePromise = null;
@@ -104,8 +143,16 @@ function confirmAction(message, title = "Änderung bestätigen", confirmLabel = 
   return new Promise((resolve) => {
     const dialog = document.createElement("dialog");
     dialog.className = "confirm-dialog";
-    dialog.innerHTML = '<div class="confirm-dialog-icon" aria-hidden="true">!</div><div><p class="eyebrow">Bitte prüfen</p><h2></h2><p class="confirm-dialog-message"></p></div><div class="confirm-dialog-actions"><button type="button" class="secondary-button" data-confirm-cancel>Abbrechen</button><button type="button" class="primary-button confirm-danger-button" data-confirm-ok></button></div>';
+    dialog.innerHTML = '<div class="confirm-dialog-icon" aria-hidden="true">!</div><div><p class="eyebrow">Bitte prüfen</p><h2></h2><p class="confirm-dialog-device hidden"></p><p class="confirm-dialog-message"></p></div><div class="confirm-dialog-actions"><button type="button" class="secondary-button" data-confirm-cancel>Abbrechen</button><button type="button" class="primary-button confirm-danger-button" data-confirm-ok></button></div>';
     dialog.querySelector("h2").textContent = title;
+    // Welches Gerät ist gemeint? Bei mehreren offenen Verbindungen ist die Verwechslung der
+    // gefährlichste Fehler, und die Rückfrage ist die letzte Stelle, an der sie auffallen kann.
+    const target = activeRouter();
+    if (target) {
+      const line = dialog.querySelector(".confirm-dialog-device");
+      line.classList.remove("hidden");
+      line.innerHTML = `<strong>${escapeHtml(target.identity || "Unbekanntes Gerät")}</strong> <small class="mono">${escapeHtml(target.host)}</small>`;
+    }
     dialog.querySelector(".confirm-dialog-message").textContent = message;
     dialog.querySelector("[data-confirm-ok]").textContent = confirmLabel;
     const finish = (confirmed) => { if (dialog.open) dialog.close(); dialog.remove(); resolve(confirmed); };
@@ -120,10 +167,128 @@ function isDarkTheme() { const explicit = document.documentElement.getAttribute(
 function updateThemeLabel() { const label = $("#theme-toggle-label"); if (label) label.textContent = isDarkTheme() ? "Hell" : "Dunkel"; }
 function toggleTheme() { const next = isDarkTheme() ? "light" : "dark"; document.documentElement.setAttribute("data-theme", next); try { localStorage.setItem("cockpit-theme", next); } catch (error) { /* localStorage blockiert -- Wahl gilt nur für diese Sitzung */ } updateThemeLabel(); }
 function showWelcome() { $("#connect-screen").classList.add("hidden"); $(".app-shell").classList.add("hidden"); $("#welcome-screen").classList.remove("hidden"); $("[data-onboarding-page]")?.focus(); }
-function showConnect(message = "") { clearWifiUndoNotice(); window.CockpitPro?.cleanup?.(); loadStates.clear(); state.session = null; localStorage.removeItem("cockpitSession"); $("#welcome-screen").classList.add("hidden"); $(".app-shell").classList.add("hidden"); $("#connect-screen").classList.remove("hidden"); $("#connect-error").textContent = message; $("#connect-password").value = ""; $("#connect-host").focus(); }
-function showDashboard() { $("#welcome-screen").classList.add("hidden"); $("#connect-screen").classList.add("hidden"); $(".app-shell").classList.remove("hidden"); }
+function showConnectScreen(message = "", adding = false) { $("#welcome-screen").classList.add("hidden"); $(".app-shell").classList.add("hidden"); $("#connect-screen").classList.remove("hidden"); $("#connect-error").textContent = message; $("#connect-password").value = ""; $("#connect-cancel")?.classList.toggle("hidden", !adding); $("#connect-add-note")?.classList.toggle("hidden", !adding); $("#connect-host").focus(); }
+// Zwei verschiedene Wege zum selben Bildschirm: showConnect() trennt alles und faengt neu an,
+// showAddDevice() nimmt ein weiteres Geraet neben die laufenden Verbindungen auf.
+function showConnect(message = "") { clearWifiUndoNotice(); window.CockpitPro?.cleanup?.(); routers.clear(); activeId = null; storeRouters(); renderDeviceBar(); showConnectScreen(message); }
+function showAddDevice() { clearWifiUndoNotice(); window.CockpitPro?.cleanup?.(); showConnectScreen("", true); $("#connect-host").value = ""; }
+function showDashboard() { $("#welcome-screen").classList.add("hidden"); $("#connect-screen").classList.add("hidden"); $(".app-shell").classList.remove("hidden"); renderDeviceBar(); }
 function applyOnboardingPage() { showPage(state.onboardingPage || "status"); if (state.onboardingPage === "guest") window.setTimeout(() => $("#guest")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80); }
 function explainConnectError(error) { if (error.code === "auth_failed") return "Benutzername oder Passwort falsch."; if (error.code === "router_unreachable") return "Gerät unter dieser Adresse nicht erreichbar."; if (error.code === "router_timeout") return "Das Gerät antwortet nicht rechtzeitig."; return explainActionError(error); }
+
+// Ein Punkt je Gerät: Fehler schlägt Laden schlägt in Ordnung. Die Leiste ist damit auch die
+// Antwort auf "welches Gerät hängt gerade?", ohne dass man dafür umschalten muss.
+function routerHealth(router) {
+  const tickets = [...router.loadStates.values()];
+  if (tickets.some((ticket) => ticket.status === "error")) return " is-warn";
+  if (tickets.some((ticket) => ticket.status === "pending")) return " is-pending";
+  return "";
+}
+let deviceBarMarkup = null;
+function renderDeviceBar() {
+  const bar = $("#device-bar");
+  if (!bar) return;
+  bar.classList.toggle("hidden", routers.size === 0);
+  if (!routers.size) { bar.innerHTML = ""; deviceBarMarkup = null; return; }
+  const chips = [...routers.values()].map((router) => {
+    const name = router.identity || "Unbekanntes Gerät";
+    const title = `${name} · ${router.host}${router.version ? ` · RouterOS ${router.version}` : ""}`;
+    const active = router.id === activeId;
+    return `<div class="device-chip${active ? " is-active" : ""}"><button class="device-chip-main" type="button" data-action="switch-device" data-device="${escapeHtml(router.id)}" title="${escapeHtml(title)}"${active ? ' aria-current="true"' : ""}><span class="device-chip-dot${routerHealth(router)}" aria-hidden="true"></span><span class="device-chip-copy"><strong>${escapeHtml(name)}</strong><small class="mono">${escapeHtml(router.host)}</small></span></button><button class="device-chip-close" type="button" data-action="disconnect-router" data-device="${escapeHtml(router.id)}" aria-label="Dieses Gerät trennen" title="Dieses Gerät trennen">×</button></div>`;
+  });
+  chips.push(`<button class="device-chip-add" type="button" data-action="add-device"${routers.size >= MAX_ROUTERS ? " disabled" : ""}>+ Gerät</button>`);
+  const markup = chips.join("");
+  // Nur bei echter Änderung neu schreiben: die Leiste wird bei jedem Ladeschritt geprüft, und
+  // ein ständiges innerHTML würde den Tastaturfokus aus einer Kachel werfen.
+  if (markup === deviceBarMarkup) return;
+  deviceBarMarkup = markup;
+  bar.innerHTML = markup;
+}
+
+// Im Browser liegen nur Sitzungskennung, Adresse, Benutzer und Port -- niemals ein Passwort.
+// Das kennt allein das Backend, und zwar nur fuer die Dauer der Sitzung.
+function storeRouters() {
+  try {
+    const entries = [...routers.values()].map((router) => ({ session: router.session, host: router.host, user: router.user, port: router.port }));
+    localStorage.setItem("cockpitSessions", JSON.stringify(entries));
+    localStorage.setItem("cockpitActiveSession", activeRouter()?.session || "");
+    localStorage.removeItem("cockpitSession");
+  } catch (error) { /* localStorage blockiert -- die Verbindungen gelten dann nur bis zum Neuladen */ }
+}
+function readStoredRouters() {
+  const entries = [];
+  try {
+    const raw = JSON.parse(localStorage.getItem("cockpitSessions") || "[]");
+    for (const item of Array.isArray(raw) ? raw : []) {
+      if (!item || typeof item.session !== "string" || !item.session) continue;
+      if (entries.some((known) => known.session === item.session)) continue;
+      entries.push({ session: item.session, host: typeof item.host === "string" ? item.host : "", user: typeof item.user === "string" ? item.user : "", port: Number(item.port) || 22 });
+    }
+    // Der frueher einzelne Schluessel wird weiter gelesen, damit eine schon offene Sitzung
+    // nach einem Update des Cockpits nicht neu angemeldet werden muss.
+    const legacy = localStorage.getItem("cockpitSession");
+    if (legacy && !entries.some((known) => known.session === legacy)) entries.unshift({ session: legacy, host: localStorage.getItem("cockpitLastHost") || "", user: "", port: 22 });
+  } catch (error) { /* unlesbarer Speicher -- dann ohne gespeicherte Verbindungen starten */ }
+  return entries;
+}
+function addRouter({ session, host, user, port, identity = null, version = null }) {
+  // Obergrenze, damit ein versehentlicher Automatismus nicht unbegrenzt SSH-Verbindungen
+  // aufbaut: jede offene Sitzung haelt im Backend ein Passwort und eine Routerverbindung.
+  if (routers.size >= MAX_ROUTERS) return null;
+  const id = `r${++routerCounter}`;
+  routers.set(id, { id, session, host: host || "", user: user || "", port: Number(port) || 22, identity: identity || null, version: version || null, data: emptyRouterData(), loadStates: new Map() });
+  return id;
+}
+// Eine Antwort gilt nur, wenn ihr Geraet noch dieselbe Sitzung hat. Bei Abfragen fuer die
+// Ansicht muss es zusaetzlich das aktive Geraet sein -- sonst wuerden die Daten des einen
+// Geraets in der Oberflaeche des anderen landen.
+const sessionStillValid = (routerId, session) => !!session && routers.get(routerId)?.session === session;
+const isCurrent = (routerId, session) => routerId === activeId && sessionStillValid(routerId, session);
+function routerLabel(router) { return router?.identity || router?.host || "einem Gerät"; }
+function dropRouter(routerId) {
+  routers.delete(routerId);
+  if (activeId === routerId) activeId = routers.keys().next().value ?? null;
+  storeRouters();
+}
+async function switchToRouter(routerId) {
+  if (!routers.has(routerId) || routerId === activeId) return;
+  clearWifiUndoNotice();
+  window.CockpitPro?.cleanup?.();
+  activeId = routerId;
+  storeRouters();
+  renderDeviceBar();
+  renderLoadStates();
+  return loadAll();
+}
+async function disconnectRouter(routerId) {
+  const router = routers.get(routerId);
+  if (!router) return;
+  const wasActive = routerId === activeId;
+  // Das Trennen selbst darf nicht daran scheitern, dass die Sitzung ohnehin schon weg ist --
+  // der Endpunkt ist absichtlich idempotent.
+  try { await request("/disconnect", { method: "POST", router: routerId }); } catch (error) { /* Sitzung war schon beendet */ }
+  dropRouter(routerId);
+  if (!routers.size) return showConnect();
+  renderDeviceBar();
+  if (wasActive) return loadAll();
+}
+async function disconnectAll() {
+  const open = [...routers.values()];
+  try { await Promise.allSettled(open.map((router) => request("/disconnect", { method: "POST", router: router.id }))); } finally { showConnect(); }
+}
+// Abgelaufene Sitzung: nur dieses eine Geraet verliert die Verbindung. Solange ein anderes
+// noch verbunden ist, bleibt das Cockpit stehen, statt alles auf den Verbinden-Bildschirm zu
+// werfen.
+function handleExpiredSession(routerId) {
+  const router = routers.get(routerId);
+  if (!router) return;
+  const wasActive = routerId === activeId;
+  dropRouter(routerId);
+  if (!routers.size) return showConnect("Die Verbindung ist abgelaufen. Bitte erneut verbinden.");
+  renderDeviceBar();
+  showToast(`Die Verbindung zu ${routerLabel(router)} ist abgelaufen.`);
+  if (wasActive) loadAll().catch(() => {});
+}
 
 async function connectToRouter(event) {
   event.preventDefault();
@@ -154,7 +319,7 @@ async function attemptConnect(payload) {
   // bei "host_key_changed" gibt es bewusst keinen Klick-weg, das bleibt eine harte Ablehnung.
   try {
     const data = await request("/connect", { method: "POST", body: jsonBody(payload) }, false);
-    return finishConnect(data, payload.host);
+    return finishConnect(data, payload);
   } catch (error) {
     if (error.code !== "host_key_unknown") throw error;
     const confirmed = await confirmAction(
@@ -169,14 +334,20 @@ async function attemptConnect(payload) {
       { method: "POST", body: jsonBody({ ...payload, confirm_fingerprint: error.fingerprint }) },
       false,
     );
-    return finishConnect(data, payload.host);
+    return finishConnect(data, payload);
   }
 }
 
-function finishConnect(data, host) {
-  state.session = data.session;
-  localStorage.setItem("cockpitSession", data.session);
-  localStorage.setItem("cockpitLastHost", host);
+function finishConnect(data, payload) {
+  const id = addRouter({ session: data.session, host: payload.host, user: payload.user, port: payload.ssh_port, identity: data.router_identity, version: data.routeros_version });
+  if (!id) {
+    $("#connect-error").textContent = `Es sind höchstens ${MAX_ROUTERS} Geräte gleichzeitig verbunden. Bitte zuerst ein Gerät trennen.`;
+    return Promise.resolve();
+  }
+  activeId = id;
+  storeRouters();
+  state.status = { router_identity: data.router_identity || null, routeros_version: data.routeros_version || null };
+  try { localStorage.setItem("cockpitLastHost", payload.host); } catch (error) { /* localStorage blockiert */ }
   // Das Backend benötigt das Passwort nur innerhalb der Sitzung. Im Browserfeld
   // darf es nach erfolgreicher Anmeldung nicht unnötig sichtbar/auslesbar bleiben.
   $("#connect-password").value = "";
@@ -190,19 +361,35 @@ async function init() {
   if (!localStorage.getItem("cockpitOnboardingSeen")) return showWelcome();
   return resumeSession();
 }
-async function resumeSession() {
-  const savedSession = localStorage.getItem("cockpitSession");
-  if (!savedSession) return showConnect();
-  state.session = savedSession;
+// Bewusst ohne request(): beim Start ist noch kein Geraet aktiv, und eine abgelaufene
+// Sitzung soll hier still verworfen werden statt eine Fehlermeldung auszuloesen.
+async function probeSession(session) {
   try {
-    const data = await request("/session");
-    state.status = { router_identity: data.router_identity, routeros_version: data.routeros_version };
-    showDashboard();
-    await loadAll();
-    applyOnboardingPage();
+    const response = await fetch(`${API_BASE}/session`, { headers: { "X-Cockpit-Session": session }, signal: AbortSignal.timeout(30000) });
+    return response.ok ? await response.json() : null;
   } catch (error) {
-    showConnect("Die vorige Verbindung ist nicht mehr aktiv. Bitte erneut verbinden.");
+    return null;
   }
+}
+async function resumeSession() {
+  const stored = readStoredRouters();
+  if (!stored.length) return showConnect();
+  let preferred = "";
+  try { preferred = localStorage.getItem("cockpitActiveSession") || ""; } catch (error) { /* localStorage blockiert */ }
+  const checked = await Promise.all(stored.map(async (entry) => [entry, await probeSession(entry.session)]));
+  routers.clear();
+  activeId = null;
+  for (const [entry, data] of checked) {
+    if (!data) continue;
+    const id = addRouter({ session: entry.session, host: entry.host, user: entry.user, port: entry.port, identity: data.router_identity, version: data.routeros_version });
+    if (!id) break;
+    routers.get(id).data.status = { router_identity: data.router_identity, routeros_version: data.routeros_version };
+    if (!activeId || entry.session === preferred) activeId = id;
+  }
+  storeRouters();
+  if (!activeId) return showConnect("Die vorige Verbindung ist nicht mehr aktiv. Bitte erneut verbinden.");
+  showDashboard();
+  return loadAll().finally(applyOnboardingPage);
 }
 async function finishOnboarding(pageName) {
   state.onboardingPage = pageName;
@@ -211,15 +398,20 @@ async function finishOnboarding(pageName) {
 }
 
 async function request(path, options = {}, withSession = true) {
-  const session = state.session;
-  const headers = { ...(withSession && state.session ? { "X-Cockpit-Session": state.session } : {}), ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
+  // `router` waehlt das Geraet, an das die Anfrage geht. Ohne Angabe ist es das aktive --
+  // eine Anfrage mit ausdruecklichem Geraet (Trennen, Flottenabfrage) darf dagegen auch dann
+  // noch ihre Antwort auswerten, wenn in der Zwischenzeit umgeschaltet wurde.
+  const { router: explicitRouter, ...fetchOptions } = options;
+  const routerId = explicitRouter === undefined ? activeId : explicitRouter;
+  const session = routers.get(routerId)?.session || null;
+  const headers = { ...(withSession && session ? { "X-Cockpit-Session": session } : {}), ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}), ...(fetchOptions.headers || {}) };
   let response;
-  try { response = await fetch(`${API_BASE}${path}`, { signal: AbortSignal.timeout(60000), ...options, headers }); } catch (error) { throw new Error(error.name === "TimeoutError" ? "Zeitüberschreitung beim Backend. Ergebnis unbekannt; vor Wiederholung aktualisieren." : `Backend nicht erreichbar unter ${API_BASE}`); }
+  try { response = await fetch(`${API_BASE}${path}`, { signal: AbortSignal.timeout(60000), ...fetchOptions, headers }); } catch (error) { throw new Error(error.name === "TimeoutError" ? "Zeitüberschreitung beim Backend. Ergebnis unbekannt; vor Wiederholung aktualisieren." : `Backend nicht erreichbar unter ${API_BASE}`); }
   // Backend neu gestartet (Update ueber start-cockpit.sh): die geladene Oberflaeche passt dann
   // nicht mehr zum Backend, deshalb einmal komplett neu laden statt mit altem Code weiterzumachen.
   const build = response.headers.get("X-Cockpit-Build");
   if (build) { if (backendBuild && backendBuild !== build) { window.location.reload(); throw new Error("Cockpit wurde aktualisiert, die Seite wird neu geladen."); } backendBuild = build; }
-  if (withSession && session !== state.session) throw new Error("Antwort einer beendeten Sitzung verworfen.");
+  if (withSession && !(explicitRouter === undefined ? isCurrent(routerId, session) : sessionStillValid(routerId, session))) throw new Error("Antwort einer beendeten Sitzung verworfen.");
   if (response.ok) return response.status === 204 ? null : response.json();
   let detail = null;
   try { detail = await response.json(); } catch (error) { /* Antwort ohne JSON */ }
@@ -228,7 +420,7 @@ async function request(path, options = {}, withSession = true) {
   failure.fingerprint = detail?.fingerprint;
   failure.keyType = detail?.key_type;
   failure.message = explainActionError(failure);
-  if (failure.code === "not_connected") showConnect("Die Verbindung ist abgelaufen. Bitte erneut verbinden.");
+  if (failure.code === "not_connected") handleExpiredSession(routerId);
   throw failure;
 }
 // Erwarteter Neustart (Reboot-Knopf, RouterOS-Update, RouterBOARD-Firmware): statt "Backend nicht
@@ -266,10 +458,11 @@ function expectReboot(reason) {
   };
   rebootWatch = window.setTimeout(tick, window.COCKPIT_REBOOT_FIRST_POLL_MS || 30000);
 }
-const loadStates = new Map();
 function renderLoadStates() {
   if (state.rebooting) return;
-  const entries = [...loadStates];
+  // Ladezustaende gehoeren zum Geraet: zwei Geraete wuerden sich sonst gegenseitig die
+  // Fehlermeldungen loeschen.
+  const entries = [...(activeRouter()?.loadStates || [])];
   const failed = entries.filter(([, value]) => value.status === "error");
   const pending = entries.some(([, value]) => value.status === "pending");
   setConnection(!failed.length && !pending);
@@ -281,25 +474,29 @@ function renderLoadStates() {
   if (!notice) { notice = document.createElement("div"); notice.id = "load-notice"; notice.className = "info-banner warning-banner"; notice.setAttribute("role", "status"); $(".topbar").after(notice); }
   notice.classList.toggle("hidden", !failed.length);
   notice.textContent = failed.map(([path, value]) => `${path}: ${value.message} Vorhandene Daten können veraltet sein.`).join(" ");
+  renderDeviceBar();
 }
 async function load(path, assign, render) {
-  const session = state.session;
+  const routerId = activeId;
+  const router = routers.get(routerId);
+  if (!router) throw new Error("Es ist kein Gerät verbunden.");
+  const session = router.session;
   const ticket = { status: "pending" };
-  loadStates.set(path, ticket);
+  router.loadStates.set(path, ticket);
   renderLoadStates();
   try {
-    const data = await request(path);
-    if (state.session !== session || loadStates.get(path) !== ticket) throw new Error("Aktualisierung durch neuere Sitzung oder Abfrage ersetzt.");
+    const data = await request(path, { router: routerId });
+    if (!isCurrent(routerId, session) || router.loadStates.get(path) !== ticket) throw new Error("Aktualisierung durch neuere Sitzung oder Abfrage ersetzt.");
     assign(data); render(); ticket.status = "ok";
     return data;
   } catch (error) {
-    if (state.session === session && loadStates.get(path) === ticket) {
+    if (isCurrent(routerId, session) && router.loadStates.get(path) === ticket) {
       ticket.status = "error"; ticket.message = explainActionError(error);
       showError(error);
     }
     throw error;
   } finally {
-    if (state.session === session && loadStates.get(path) === ticket) renderLoadStates();
+    if (isCurrent(routerId, session) && router.loadStates.get(path) === ticket) renderLoadStates();
   }
 }
 function jsonBody(value) { return JSON.stringify(value); }
@@ -330,6 +527,7 @@ function renderTodayImportant() {
 }
 
 function renderStatus() {
+  renderDeviceBar();
   const data = state.status;
   if (!data) return;
   const online = data.internet === "up";
@@ -384,7 +582,14 @@ function renderWanInterfacePicker() {
 }
 async function loadStatus() {
   try {
-    await load("/status", (data) => { state.status = data; state.wanInterfaceError = null; }, renderStatus);
+    await load("/status", (data) => {
+      state.status = data;
+      state.wanInterfaceError = null;
+      // Die Kachel soll den Namen zeigen, den der Router jetzt trägt -- nicht den vom Verbinden.
+      const router = activeRouter();
+      if (router && data.router_identity) router.identity = data.router_identity;
+      if (router && data.routeros_version) router.version = data.routeros_version;
+    }, renderStatus);
   } catch (error) {
     if (error.code !== "wan_interface_ambiguous" || state.session === null) throw error;
     state.wanInterfaceError = error;
@@ -501,7 +706,7 @@ async function loadAll() {
 function openDevicePanel(mac) { const device = state.devices.find((item) => item.mac === mac); if (!device) return; $("#device-panel").classList.remove("hidden"); $("#device-panel").innerHTML = `<div><p class="eyebrow">Gerät verwalten</p><h3>${escapeHtml(device.hostname || "Unbekanntes Gerät")}</h3><p class="muted">${escapeHtml(device.vendor_guess || "Hersteller unbekannt")} · ${escapeHtml(device.mac)}</p><div class="suggestion">Erkennung wird geprüft …</div></div><div class="panel-actions"><label>Feste IP<input id="reservation-ip" value="${escapeHtml(device.ip || "")}"></label><button class="primary-button" type="button" data-action="save-reservation" data-device="${escapeHtml(device.mac)}">IP speichern</button><button class="secondary-button" type="button" data-action="open-webui" data-device="${escapeHtml(device.mac)}">Weboberfläche öffnen</button><button class="device-action" type="button" data-action="disconnect-device" data-device="${escapeHtml(device.mac)}">WLAN kurz trennen</button></div>`; $("#device-panel").scrollIntoView({ behavior: "smooth", block: "nearest" }); load(`/devices/${encodeURIComponent(mac)}/webui-suggestion`, (suggestion) => { const text = suggestion.suggested ? `Weboberfläche erkannt: ${escapeHtml(suggestion.vendor)} · Port ${suggestion.default_port}` : "Keine Weboberfläche automatisch erkannt."; $("#device-panel .suggestion").innerHTML = text; }, () => {}).catch(() => {}); }
 
 document.addEventListener("submit", async (event) => { if (event.target.matches("#connect-form")) return connectToRouter(event); if (event.target.matches(".wifi-ssid-form")) { event.preventDefault(); const input = event.target.querySelector("input"); try { const data = await request(`/wifi/${encodeURIComponent(event.target.dataset.interface)}/ssid`, { method: "PUT", body: jsonBody({ ssid: input.value }) }); const network = state.wifi.find((item) => item.interface === event.target.dataset.interface); if (network) network.ssid = data.ssid; renderWifi(); showToast("WLAN-Name wurde geändert."); } catch (error) { showToast(error.message); } return; } if (!event.target.matches(".wifi-form")) return; event.preventDefault(); const input = event.target.querySelector("input"); try { const result = await request(`/wifi/${encodeURIComponent(event.target.dataset.interface)}/password`, { method: "PUT", body: jsonBody({ new_password: input.value }) }); input.value = ""; if (result.undo_available === true) return showWifiUndoNotice(event.target.dataset.interface); showToast("WLAN-Passwort wurde geändert."); } catch (error) { showToast(error.message); } });
-document.addEventListener("submit", async (event) => { if (!event.target.matches("#router-identity-form")) return; event.preventDefault(); const input = $("#router-identity-input"); try { const data = await request("/router-identity", { method: "PUT", body: jsonBody({ name: input.value.trim() }) }); state.status.router_identity = data.router_identity; renderStatus(); $("#router-identity-form").classList.add("hidden"); showToast("Routername wurde gespeichert."); } catch (error) { showToast(error.message); } });
+document.addEventListener("submit", async (event) => { if (!event.target.matches("#router-identity-form")) return; event.preventDefault(); const input = $("#router-identity-input"); try { const data = await request("/router-identity", { method: "PUT", body: jsonBody({ name: input.value.trim() }) }); state.status.router_identity = data.router_identity; const renamed = activeRouter(); if (renamed) renamed.identity = data.router_identity; renderStatus(); $("#router-identity-form").classList.add("hidden"); showToast("Routername wurde gespeichert."); } catch (error) { showToast(error.message); } });
 document.addEventListener("submit", async (event) => {
   if (event.target.matches(".network-ip-form")) {
     event.preventDefault();
@@ -533,7 +738,11 @@ document.addEventListener("click", async (event) => {
   try {
     if (action === "toggle-theme") { toggleTheme(); return; }
     if (action === "show-page-security") { showPage("security"); return; }
-    if (action === "disconnect") { try { await request("/disconnect", { method: "POST" }); } finally { showConnect(); } return; }
+    if (action === "disconnect") return disconnectAll();
+    if (action === "add-device") { if (routers.size >= MAX_ROUTERS) return showToast(`Es sind höchstens ${MAX_ROUTERS} Geräte gleichzeitig verbunden. Bitte zuerst ein Gerät trennen.`); showAddDevice(); return; }
+    if (action === "cancel-add-device") { if (!routers.size) return showConnect(); $("#connect-password").value = ""; $("#connect-error").textContent = ""; showDashboard(); return; }
+    if (action === "switch-device") { await switchToRouter(event.target.closest("[data-action]").dataset.device); return; }
+    if (action === "disconnect-router") { await disconnectRouter(event.target.closest("[data-action]").dataset.device); return; }
     if (action === "refresh") return loadAll();
     if (action === "show-identity-form") { $("#router-identity-form").classList.toggle("hidden"); if (!$("#router-identity-form").classList.contains("hidden")) $("#router-identity-input").focus(); return; }
     if (action === "copy-ip") { await navigator.clipboard?.writeText($("#wan-ip").textContent); return showToast("WAN-Adresse in die Zwischenablage kopiert."); }

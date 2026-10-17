@@ -63,8 +63,21 @@ except ValueError:
 EXEMPT_API_PATHS = {"/api/v1/connect", "/api/v1/disconnect"}
 
 
+class SessionGone(Exception):
+    """Die Sitzung war bei der Vorpruefung noch da und ist beim Routerzugriff weg."""
+
+
 def current_conn() -> dict:
-    return SESSIONS[request.headers["X-Cockpit-Session"]]
+    # Zwischen require_session() und diesem Zugriff kann ein /disconnect liegen. Mit mehreren
+    # gleichzeitig verbundenen Geraeten ist das kein Sonderfall mehr, sondern der Normalfall:
+    # wird ein Geraet getrennt, waehrend seine Abfragen noch laufen, findet die laufende
+    # Anfrage ihre Sitzung nicht mehr. Bis zum 17.10. war das ein KeyError und damit ein
+    # HTTP 500 mit Stacktrace -- es ist aber dieselbe Lage wie eine abgelaufene Sitzung, und
+    # genau die kennt die Oberflaeche als "not_connected" und raeumt sie sauber ab.
+    try:
+        return SESSIONS[request.headers["X-Cockpit-Session"]]
+    except KeyError as exc:
+        raise SessionGone() from exc
 
 
 def router(command: str) -> str:

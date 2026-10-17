@@ -10,6 +10,11 @@ window.COCKPIT_PATTERNS_EN = [
   [/^Zuletzt geprüft: (.+)$/, "Last checked: $1"],
   [/^(\d+) von (\d+) Prüfungen bestanden$/, "$1 of $2 checks passed"],
   [/^Backend nicht erreichbar unter (.+)$/, "Backend unreachable at $1"],
+  // Der Sonderfall muss vor dem allgemeinen Muster stehen, sonst bliebe "einem Gerät" deutsch.
+  [/^Die Verbindung zu einem Gerät ist abgelaufen\.$/, "The connection to a device has expired."],
+  [/^Die Verbindung zu (.+) ist abgelaufen\.$/, "The connection to $1 has expired."],
+  [/^Es sind höchstens (\d+) Geräte gleichzeitig verbunden\. Bitte zuerst ein Gerät trennen\.$/,
+    "At most $1 devices can be connected at the same time. Please disconnect a device first."],
   [/^Backend-Fehler \((\d+)\)$/, "Backend error ($1)"],
   [/^(.+): (.+) Vorhandene Daten können veraltet sein\.$/, "$1: $2 Existing data may be out of date."],
   [/^Weboberfläche erkannt: (.+) · Port (.+)$/, "Web interface detected: $1 · port $2"],

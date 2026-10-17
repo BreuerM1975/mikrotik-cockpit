@@ -552,6 +552,32 @@ class ApiTest(unittest.TestCase):
         self.client.post("/api/v1/disconnect", headers=self.headers)
         close_connection.assert_called_once_with("test-host", "admin", 22)
 
+    def test_request_loses_its_session_midway_and_gets_a_clean_401(self):
+        # Live am 17.10. aufgefallen: wird ein Geraet getrennt, waehrend seine Abfragen noch
+        # laufen, fand die laufende Anfrage ihre Sitzung nicht mehr -- KeyError und HTTP 500
+        # mit Stacktrace im Dienstprotokoll. Mit mehreren Geraeten ist das der Normalfall.
+        # dict.get() in der Vorpruefung findet die Sitzung noch, der Zugriff per Schluessel
+        # in current_conn() nicht mehr -- genau diese Reihenfolge bildet die Klasse nach.
+        class SessionsThatVanish(dict):
+            def __getitem__(self, key):
+                raise KeyError(key)
+
+        original = core_module.SESSIONS
+        core_module.SESSIONS = SessionsThatVanish(original)
+        try:
+            resp = self.client.get("/api/v1/status", headers=self.headers)
+        finally:
+            core_module.SESSIONS = original
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.get_json()["error"], "not_connected")
+
+    def test_current_conn_reports_a_gone_session_instead_of_crashing(self):
+        with app_module.app.test_request_context(
+            "/api/v1/status", headers={"X-Cockpit-Session": "laengst-getrennt"},
+        ):
+            with self.assertRaises(core_module.SessionGone):
+                core_module.current_conn()
+
     @patch("core.router", side_effect=fake_router)
     def test_session_status(self, _mock):
         resp = self.client.get("/api/v1/session", headers=self.headers)
