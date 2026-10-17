@@ -511,6 +511,47 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json(), {"ok": True})
 
+    # Schritt 0 des Multisession-Umbaus: die SSH-Master-Verbindung muss beim
+    # Trennen mit abgeraeumt werden, sonst haelt sie bis zum Ablauf von ControlPersist eine
+    # Routersitzung offen, zu der es im Cockpit keine Oberflaeche mehr gibt.
+    @patch("routes_basis.close_connection")
+    def test_disconnect_closes_ssh_master_connection(self, close_connection):
+        resp = self.client.post("/api/v1/disconnect", headers=self.headers)
+        self.assertEqual(resp.status_code, 200)
+        close_connection.assert_called_once_with("test-host", "admin", 22)
+
+    @patch("routes_basis.close_connection")
+    def test_disconnect_without_session_does_not_close_anything(self, close_connection):
+        self.client.post("/api/v1/disconnect")
+        close_connection.assert_not_called()
+
+    @patch("routes_basis.close_connection")
+    def test_disconnect_keeps_master_while_another_session_uses_same_device(self, close_connection):
+        # Multisession: zwei Cockpit-Sitzungen auf dasselbe Geraet mit demselben Benutzer
+        # teilen denselben Kontrollsocket. Ein "ssh -O exit" wuerde der zweiten Sitzung die
+        # Verbindung unter den Fuessen wegziehen.
+        core_module.SESSIONS["zweite"] = {
+            "host": "test-host", "user": "admin", "password": "test-pass", "ssh_port": 22,
+        }
+        self.client.post("/api/v1/disconnect", headers=self.headers)
+        close_connection.assert_not_called()
+        # Erst wenn die letzte Sitzung dieses Geraets geht, darf die Verbindung weg.
+        self.client.post("/api/v1/disconnect", headers={"X-Cockpit-Session": "zweite"})
+        close_connection.assert_called_once_with("test-host", "admin", 22)
+
+    @patch("routes_basis.close_connection")
+    def test_disconnect_closes_master_when_other_session_is_a_different_device(self, close_connection):
+        # Gegenprobe zum Test davor: anderer Host, anderer Benutzer und anderer Port teilen
+        # sich keinen Socket -- hier muss getrennt werden.
+        for key, conn in {
+            "anderer-host": {"host": "other-host", "user": "admin", "ssh_port": 22},
+            "anderer-user": {"host": "test-host", "user": "claude", "ssh_port": 22},
+            "anderer-port": {"host": "test-host", "user": "admin", "ssh_port": 2223},
+        }.items():
+            core_module.SESSIONS[key] = {**conn, "password": "x"}
+        self.client.post("/api/v1/disconnect", headers=self.headers)
+        close_connection.assert_called_once_with("test-host", "admin", 22)
+
     @patch("core.router", side_effect=fake_router)
     def test_session_status(self, _mock):
         resp = self.client.get("/api/v1/session", headers=self.headers)

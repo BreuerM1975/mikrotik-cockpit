@@ -1,18 +1,23 @@
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import routeros
 from routeros import (
     HostKeyChanged,
     HostKeyUnknown,
     RouterCommandFailed,
     RouterUnreachable,
+    close_connection,
+    download_file,
     ensure_host_key_trusted,
     parse_colon,
     parse_terse,
     run_command,
     trust_host_key,
+    upload_file,
 )
 
 
@@ -271,6 +276,225 @@ class HostKeyTrustTest(unittest.TestCase):
                 self.assertEqual(handle.read().strip(), self.RAW_LINE)
             self.assertEqual(os.stat(known_hosts_path).st_mode & 0o777, 0o600)
             self.assertEqual(os.stat(os.path.dirname(known_hosts_path)).st_mode & 0o777, 0o700)
+
+
+class SshMultiplexingTest(unittest.TestCase):
+    """Schritt 0 des Multisession-Umbaus.
+
+    Der Kontrollsocket ist, solange er lebt, ein passwortfreier Zugang zum Router -- die
+    Pruefungen hier sind deshalb nicht Kosmetik, sondern derselbe Schutz wie bei known_hosts
+    und dem Backup-Verzeichnis (Audit Runde 3, Befund 1).
+    """
+
+    def _options_of(self, mock_run):
+        return mock_run.call_args[0][0]
+
+    def _control_path_from(self, options):
+        for entry in options:
+            if entry.startswith("ControlPath="):
+                return entry.split("=", 1)[1]
+        return None
+
+    @patch("routeros.subprocess.run")
+    def test_run_command_multiplexes_by_default(self, mock_run):
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            control_dir = os.path.join(tmp, "ssh")
+            with patch("routeros._CONTROL_DIR", control_dir):
+                run_command("192.0.2.230", "zweitkonto", "pass", 22, "/system identity print")
+            options = self._options_of(mock_run)
+            # Der Befehl selbst benutzt den Socket, wird aber nie selbst Master -- siehe
+            # test_parallel_calls_build_exactly_one_master.
+            self.assertIn("ControlMaster=no", options)
+            self.assertNotIn("ControlMaster=auto", options)
+            self.assertIsNotNone(self._control_path_from(options))
+            # Das Verzeichnis muss privat angelegt werden, nicht mit Standardrechten.
+            self.assertEqual(os.stat(control_dir).st_mode & 0o777, 0o700)
+
+    @patch("routeros.subprocess.run")
+    def test_builds_master_connection_before_the_command(self, mock_run):
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("routeros._CONTROL_DIR", os.path.join(tmp, "ssh")):
+                run_command("10.0.0.1", "admin", "pass", 22, "print")
+            aufrufe = [call[0][0] for call in mock_run.call_args_list]
+        master = [c for c in aufrufe if "-M" in c]
+        self.assertEqual(len(master), 1, "genau ein Master-Aufbau erwartet")
+        self.assertEqual(master[0][:5], ["sshpass", "-e", "ssh", "-M", "-N"])
+        self.assertIn("-f", master[0])
+        self.assertIn(f"ControlPersist={routeros._CONTROL_PERSIST}", master[0])
+        # Der Master muss VOR dem eigentlichen Befehl aufgebaut werden, sonst findet ihn
+        # der Befehl nicht.
+        self.assertLess(aufrufe.index(master[0]), len(aufrufe) - 1)
+
+    @patch("routeros.subprocess.run")
+    def test_running_master_is_not_rebuilt(self, mock_run):
+        mock_run.return_value = _fake_completed("")  # returncode 0 => "-O check" sagt: laeuft
+        with tempfile.TemporaryDirectory() as tmp:
+            control_dir = os.path.join(tmp, "ssh")
+            os.makedirs(control_dir, mode=0o700)
+            with patch("routeros._CONTROL_DIR", control_dir):
+                open(routeros._control_path("10.0.0.1", "admin", 22), "w").close()
+                run_command("10.0.0.1", "admin", "pass", 22, "print")
+            aufrufe = [call[0][0] for call in mock_run.call_args_list]
+        self.assertEqual([c for c in aufrufe if "-M" in c], [])
+        self.assertTrue(any("-O" in c and "check" in c for c in aufrufe))
+
+    def test_parallel_calls_build_exactly_one_master(self):
+        """Der Fehler, der diese Umstellung ausgeloest hat.
+
+        Die Oberflaeche schickt die rund zwoelf Abfragen eines Durchlaufs gleichzeitig. Mit
+        `ControlMaster=auto` fand keiner der Prozesse einen Socket, alle wurden selbst Master,
+        und am Router standen zwoelf Sitzungen statt einer -- live am 2026-10-17 gemessen
+        (5,75 s gegen 5,00 s, zehn gleichzeitige Sitzungen in beiden Faellen). Der Master wird
+        deshalb unter einem Lock je Ziel von genau einem Thread aufgebaut.
+        """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        aufrufe = []
+        aufrufe_lock = threading.Lock()
+        bereit = threading.Barrier(12)
+
+        def fake_run(command, *args, **kwargs):
+            with aufrufe_lock:
+                aufrufe.append(list(command))
+            if "-M" in command:
+                # Master-Aufbau: Socket anlegen, wie es ssh tun wuerde.
+                path = next(a.split("=", 1)[1] for a in command if a.startswith("ControlPath="))
+                open(path, "w").close()
+                time.sleep(0.05)  # Aufbau dauert, waehrenddessen draengen die anderen nach
+            return _fake_completed("")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("routeros._CONTROL_DIR", os.path.join(tmp, "ssh")), \
+                 patch("routeros.subprocess.run", side_effect=fake_run):
+                def arbeiter(_):
+                    bereit.wait(timeout=5)
+                    run_command("10.0.0.1", "admin", "pass", 22, "print")
+                with ThreadPoolExecutor(max_workers=12) as pool:
+                    list(pool.map(arbeiter, range(12)))
+
+        master = [c for c in aufrufe if "-M" in c]
+        self.assertEqual(len(master), 1, f"genau ein Master erwartet, waren {len(master)}")
+        befehle = [c for c in aufrufe if "print" in c]
+        self.assertEqual(len(befehle), 12)
+        for c in befehle:
+            self.assertIn("ControlMaster=no", c)
+
+    @patch("routeros.subprocess.run")
+    def test_control_path_does_not_leak_hostname(self, mock_run):
+        # Im Dateisystem soll nicht ablesbar sein, welche Router hier verwaltet werden.
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("routeros._CONTROL_DIR", os.path.join(tmp, "ssh")):
+                run_command("192.0.2.230", "zweitkonto", "pass", 22, "print")
+            path = self._control_path_from(self._options_of(mock_run))
+            self.assertNotIn("192.0.2.230", path)
+            self.assertNotIn("zweitkonto", os.path.basename(path))
+
+    @patch("routeros.subprocess.run")
+    def test_same_target_shares_path_and_different_targets_do_not(self, mock_run):
+        mock_run.return_value = _fake_completed("")
+        paths = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("routeros._CONTROL_DIR", os.path.join(tmp, "ssh")):
+                for label, (host, user, port) in {
+                    "a": ("10.0.0.1", "admin", 22),
+                    "a_again": ("10.0.0.1", "admin", 22),
+                    "other_user": ("10.0.0.1", "zweitkonto", 22),
+                    "other_port": ("10.0.0.1", "admin", 2223),
+                    "other_host": ("10.0.0.2", "admin", 22),
+                }.items():
+                    run_command(host, user, "pass", port, "print")
+                    paths[label] = self._control_path_from(self._options_of(mock_run))
+        self.assertEqual(paths["a"], paths["a_again"])
+        # Zwei Routerbenutzer am gleichen Geraet duerfen sich keinen Socket teilen, sonst
+        # liefen Befehle mit den Rechten des falschen Kontos.
+        self.assertNotEqual(paths["a"], paths["other_user"])
+        self.assertNotEqual(paths["a"], paths["other_port"])
+        self.assertNotEqual(paths["a"], paths["other_host"])
+
+    @patch("routeros.subprocess.run")
+    def test_env_switch_disables_multiplexing(self, mock_run):
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("routeros._CONTROL_DIR", os.path.join(tmp, "ssh")), \
+                 patch.dict(os.environ, {"COCKPIT_SSH_MULTIPLEXING": "0"}):
+                run_command("10.0.0.1", "admin", "pass", 22, "print")
+            options = self._options_of(mock_run)
+            self.assertNotIn("ControlMaster=auto", options)
+            self.assertIsNone(self._control_path_from(options))
+
+    @patch("routeros.subprocess.run")
+    def test_group_writable_directory_disables_multiplexing(self, mock_run):
+        # Fail-safe: ein Verzeichnis, das ein Dritter vorbereitet haben koennte, wird nicht
+        # benutzt. Der Rueckfall ist das bisherige Verhalten, nicht ein Fehler.
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            control_dir = os.path.join(tmp, "ssh")
+            os.makedirs(control_dir, mode=0o777)
+            os.chmod(control_dir, 0o777)
+            with patch("routeros._CONTROL_DIR", control_dir):
+                run_command("10.0.0.1", "admin", "pass", 22, "print")
+            self.assertIsNone(self._control_path_from(self._options_of(mock_run)))
+
+    @patch("routeros.subprocess.run")
+    def test_symlinked_directory_disables_multiplexing(self, mock_run):
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "elsewhere")
+            os.makedirs(target, mode=0o700)
+            link = os.path.join(tmp, "ssh")
+            os.symlink(target, link)
+            with patch("routeros._CONTROL_DIR", link):
+                run_command("10.0.0.1", "admin", "pass", 22, "print")
+            self.assertIsNone(self._control_path_from(self._options_of(mock_run)))
+
+    @patch("routeros.subprocess.run")
+    def test_overlong_path_disables_multiplexing(self, mock_run):
+        # Unix-Sockets haben eine Pfadgrenze; ohne diese Pruefung wuerde ssh mit
+        # "ControlPath too long" scheitern -- und damit jeder Routerbefehl.
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            deep = os.path.join(tmp, "x" * 120)
+            with patch("routeros._CONTROL_DIR", deep):
+                run_command("10.0.0.1", "admin", "pass", 22, "print")
+            self.assertIsNone(self._control_path_from(self._options_of(mock_run)))
+
+    @patch("routeros.subprocess.run")
+    def test_file_transfers_multiplex_too(self, mock_run):
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("routeros._CONTROL_DIR", os.path.join(tmp, "ssh")):
+                download_file("10.0.0.1", "admin", "pass", 22, "x.backup", os.path.join(tmp, "x"))
+                self.assertIn("ControlMaster=no", self._options_of(mock_run))
+                self.assertIsNotNone(self._control_path_from(self._options_of(mock_run)))
+                upload_file("10.0.0.1", "admin", "pass", 22, os.path.join(tmp, "x"), "x.backup")
+                self.assertIn("ControlMaster=no", self._options_of(mock_run))
+                self.assertIsNotNone(self._control_path_from(self._options_of(mock_run)))
+
+    def test_close_connection_without_socket_is_a_no_op(self):
+        # Trennen muss idempotent bleiben und darf nie werfen.
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("routeros._CONTROL_DIR", os.path.join(tmp, "ssh")):
+                self.assertFalse(close_connection("10.0.0.1", "admin", 22))
+
+    @patch("routeros.subprocess.run")
+    def test_close_connection_sends_exit_for_existing_socket(self, mock_run):
+        mock_run.return_value = _fake_completed("")
+        with tempfile.TemporaryDirectory() as tmp:
+            control_dir = os.path.join(tmp, "ssh")
+            os.makedirs(control_dir, mode=0o700)
+            with patch("routeros._CONTROL_DIR", control_dir):
+                path = routeros._control_path("10.0.0.1", "admin", 22)
+                open(path, "w").close()  # Socket-Platzhalter
+                self.assertTrue(close_connection("10.0.0.1", "admin", 22))
+            command = self._options_of(mock_run)
+            self.assertEqual(command[:3], ["ssh", "-O", "exit"])
+            self.assertIn(f"ControlPath={path}", command)
+            # Ein "-O exit" redet nur mit dem Socket und braucht kein Passwort.
+            self.assertNotIn("sshpass", command)
 
 
 if __name__ == "__main__":

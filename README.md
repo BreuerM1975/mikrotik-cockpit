@@ -3,10 +3,10 @@
 > A live, browser-based management UI for MikroTik RouterOS — with plain-language explanations, safety warnings, and device direct-links. Think WinBox, but for the 80 % of daily tasks.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-231%20passing-brightgreen)](#)
+[![Tests](https://img.shields.io/badge/Tests-248%20passing-brightgreen)](#)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.x-orange)](#)
 
-**Status:** Working prototype — 231 backend tests, security audited, live-verified against RouterOS 7.23.1 on real hardware (MikroTik hAP ac Lite). Not yet a polished commercial product.
+**Status:** Working prototype — 248 backend tests, security audited, live-verified against RouterOS 7.23.1 on real hardware (MikroTik hAP ac Lite). Not yet a polished commercial product.
 
 **Language:** The interface speaks English and German. It follows your browser language and can be switched any time with the EN/DE button in the header.
 
@@ -237,7 +237,7 @@ python3 -m unittest discover -s app/backend/src -q
 python3 app/frontend/test-language-static.py
 ```
 
-Current test count: **231 backend tests**, all green. They mock the router, so no hardware is
+Current test count: **248 backend tests**, all green. They mock the router, so no hardware is
 needed.
 
 The interface is written in German and translated at the DOM level: `i18n.js` looks each string up

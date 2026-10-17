@@ -1,6 +1,8 @@
+import hashlib
 import os
 import re
 import subprocess
+import threading
 
 
 class RouterUnreachable(Exception):
@@ -159,6 +161,176 @@ _ROUTEROS_ERROR_RE = re.compile(
 )
 
 
+# SSH-Verbindungsmultiplexing (Schritt 0 des Multisession-Umbaus).
+#
+# Bisher startete jeder einzelne Routerbefehl einen eigenen ssh-Prozess mit vollem Handshake.
+# Ein kompletter Oberflaechen-Durchlauf ("loadAll") sind rund zwoelf Befehle -- also zwoelf
+# Anmeldungen und zwoelf gleichzeitige Sitzungen am Router. Fuer Multisession mit mehreren
+# Geraeten vervielfacht sich das, und wer so pollt, sammelt am Router hunderte offene Sitzungen
+# an, weil jeder Aufruf eine neue aufmacht und keine davon geschlossen wird.
+#
+# Mit Multiplexing haelt eine Master-Verbindung offen, alle Befehle laufen als Kanal darueber.
+# Am 2026-10-17 live am hAP ac Lite gemessen, zwoelf Befehle:
+#   nacheinander  7,22 s -> 0,90 s (602 ms -> 75 ms je Befehl)
+#   gleichzeitig  5,54 s -> 1,06 s, und die gleichzeitigen Routersitzungen 12 -> 1
+#
+# Sicherheit: Der Kontrollsocket ist, solange er lebt, ein passwortfreier Zugang zum Router.
+# Wer ihn lesen/schreiben kann, kann darueber Befehle ausfuehren, ohne das Routerpasswort zu
+# kennen. Er gehoert deshalb in dasselbe private ~/.config-Verzeichnis wie known_hosts und die
+# Backups (Audit Runde 3, Befund 1: ein world-schreibbarer /tmp-Pfad mit vorhersehbarem Namen
+# war dort schon einmal ein P0-Fund) und niemals nach /tmp. Der Dateiname ist ein Hash aus
+# Benutzer, Host und Port -- so steht im Dateisystem nicht, welche Router hier verwaltet werden.
+#
+# Fail-safe statt fail-closed: Laesst sich das Verzeichnis nicht sicher herstellen oder ist der
+# Pfad zu lang fuer einen Unix-Socket, wird Multiplexing still uebersprungen. Der Rueckfall ist
+# genau das bisherige, bereits geprueft abgesicherte Verhalten -- ein Prozess je Befehl. Eine
+# Optimierung darf das Werkzeug nicht blockieren.
+_CONTROL_DIR = os.environ.get(
+    "COCKPIT_SSH_CONTROL_DIR",
+    os.path.join(os.path.expanduser("~/.config/mikrotik-cockpit"), "ssh"),
+)
+_CONTROL_PERSIST = os.environ.get("COCKPIT_SSH_CONTROL_PERSIST", "60s")
+# Linux begrenzt Unix-Socket-Pfade auf 108 Zeichen (sun_path); ssh haengt an den ControlPath
+# zeitweise noch ".<zufall>" an. 100 laesst dafuer Luft.
+_CONTROL_PATH_MAX = 100
+
+
+def multiplexing_enabled() -> bool:
+    return os.environ.get("COCKPIT_SSH_MULTIPLEXING", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _control_path(host: str, user: str, port: int) -> str | None:
+    """Pfad des Kontrollsockets fuer genau diese Verbindung, oder None, wenn Multiplexing
+    hier nicht sicher oder nicht moeglich ist.
+
+    Benutzer, Host und Port gehen zusammen in den Hash: zwei Routerbenutzer am gleichen Geraet
+    duerfen sich keinen Socket teilen, sonst liefen Befehle mit den Rechten des falschen Kontos.
+    Das Passwort geht bewusst NICHT ein -- sonst waere nach einem Passwortwechsel die alte
+    Verbindung noch nutzbar, ohne dass sie jemand findet und beendet.
+    """
+    if not multiplexing_enabled():
+        return None
+    try:
+        if os.path.islink(_CONTROL_DIR):
+            return None
+        if os.path.isdir(_CONTROL_DIR):
+            stat = os.stat(_CONTROL_DIR)
+            if stat.st_uid != os.getuid() or stat.st_mode & 0o077:
+                return None
+            os.chmod(_CONTROL_DIR, 0o700)
+        else:
+            os.makedirs(_CONTROL_DIR, mode=0o700, exist_ok=True)
+            os.chmod(_CONTROL_DIR, 0o700)
+    except OSError:
+        return None
+    digest = hashlib.sha256(f"{user}@{host}:{int(port)}".encode()).hexdigest()[:16]
+    path = os.path.join(_CONTROL_DIR, f"cm-{digest}")
+    if len(path) > _CONTROL_PATH_MAX:
+        return None
+    return path
+
+
+def _control_opts(host: str, user: str, port: int) -> list[str]:
+    """Optionen fuer einen gewoehnlichen Befehl: bestehende Master-Verbindung mitbenutzen,
+    aber **nie selbst Master werden**.
+
+    Bewusst `ControlMaster=no` statt `auto`. Mit `auto` war die Aenderung im realistischen Fall
+    wirkungslos: die Oberflaeche schickt die rund zwoelf Abfragen eines Durchlaufs per
+    `Promise.allSettled` **gleichzeitig**, und zwoelf gleichzeitig startende Prozesse finden alle
+    keinen Socket und werden alle selbst Master. Am 2026-10-17 live gemessen: zwoelf parallele
+    Befehle am hAP, 5,75 s gegen 5,00 s und in beiden Faellen zehn gleichzeitige Routersitzungen.
+    Der Master wird deshalb vorher von genau einem Thread aufgebaut, siehe `_ensure_master()`.
+
+    Fehlt der Socket, baut ssh wie bisher eine eigene Verbindung auf -- langsamer, aber korrekt.
+    """
+    path = _control_path(host, user, port)
+    if path is None:
+        return []
+    return ["-o", "ControlMaster=no", "-o", f"ControlPath={path}"]
+
+
+# Begrenzter Lock-Pool wie `_router_create_locks` in core.py: dasselbe Ziel wird beim
+# Verbindungsaufbau serialisiert, ohne mit jedem Geraet neue Lock-Objekte anzusammeln.
+_master_locks = [threading.Lock() for _ in range(32)]
+
+
+def _master_running(path: str, host: str, user: str, port: int) -> bool:
+    try:
+        return subprocess.run(
+            ["ssh", "-O", "check", "-o", f"ControlPath={path}", "-p", str(port), f"{user}@{host}"],
+            capture_output=True, text=True, timeout=5,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _ensure_master(
+    host: str, user: str, password: str, port: int,
+    timeout: int, known_hosts_path: str | None, host_key_opts: list[str],
+) -> None:
+    """Stellt sicher, dass fuer dieses Ziel eine Master-Verbindung laeuft.
+
+    Serialisiert je Ziel: von zwoelf gleichzeitigen Abfragen baut genau eine die Verbindung
+    auf, die anderen elf warten kurz und benutzen sie dann mit. Ohne diese Serialisierung
+    bringt Multiplexing im parallelen Fall nichts (siehe `_control_opts`).
+
+    Wirft nie. Scheitert der Aufbau -- falsches Passwort, Geraet weg, Multiplexing nicht
+    moeglich -- laeuft der eigentliche Befehl danach ohne Socket weiter und liefert seinen
+    eigenen, bereits behandelten Fehler. So bleibt die Unterscheidung zwischen
+    RouterAuthFailed (sshpass-Exitcode 5) und RouterUnreachable unveraendert erhalten.
+    """
+    path = _control_path(host, user, port)
+    if path is None:
+        return
+    if os.path.exists(path) and _master_running(path, host, user, port):
+        return
+    with _master_locks[hash(path) % len(_master_locks)]:
+        # Zweite Pruefung unter dem Lock: waehrend des Wartens hat ihn vielleicht schon
+        # ein anderer Thread aufgebaut.
+        if os.path.exists(path) and _master_running(path, host, user, port):
+            return
+        try:
+            subprocess.run(
+                [
+                    "sshpass", "-e", "ssh",
+                    "-M", "-N", "-f",
+                    "-p", str(port),
+                    *host_key_opts,
+                    "-o", f"ControlPath={path}",
+                    "-o", f"ControlPersist={_CONTROL_PERSIST}",
+                    "-o", f"ConnectTimeout={timeout}",
+                    f"{user}@{host}",
+                ],
+                env={**os.environ, "SSHPASS": password},
+                capture_output=True, text=True, timeout=timeout + 5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+
+
+def close_connection(host: str, user: str, port: int) -> bool:
+    """Beendet die Master-Verbindung zu diesem Geraet, falls eine laeuft.
+
+    Gehoert zum Trennen einer Cockpit-Sitzung: ohne diesen Aufruf bliebe die Routersitzung noch
+    die Dauer von ControlPersist offen, obwohl es im Cockpit keine Oberflaeche mehr dazu gibt.
+    Gibt True zurueck, wenn eine Verbindung beendet wurde. Wirft nie -- Trennen ist idempotent
+    und darf nicht an einem schon verschwundenen Socket scheitern.
+    """
+    path = _control_path(host, user, port)
+    if path is None or not os.path.exists(path):
+        return False
+    try:
+        result = subprocess.run(
+            ["ssh", "-O", "exit", "-o", f"ControlPath={path}", "-p", str(port), f"{user}@{host}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def run_command(
     host: str, user: str, password: str, port: int, command: str,
     timeout: int = 10, known_hosts_path: str | None = None,
@@ -172,10 +344,12 @@ def run_command(
         ["-o", f"UserKnownHostsFile={known_hosts_path}", "-o", "StrictHostKeyChecking=yes"]
         if known_hosts_path else ["-o", "StrictHostKeyChecking=accept-new"]
     )
+    _ensure_master(host, user, password, port, timeout, known_hosts_path, host_key_opts)
     ssh_cmd = [
         "sshpass", "-e", "ssh",
         "-p", str(port),
         *host_key_opts,
+        *_control_opts(host, user, port),
         "-o", f"ConnectTimeout={timeout}",
         f"{user}@{host}",
         command,
@@ -212,10 +386,12 @@ def download_file(
         ["-o", f"UserKnownHostsFile={known_hosts_path}", "-o", "StrictHostKeyChecking=yes"]
         if known_hosts_path else ["-o", "StrictHostKeyChecking=accept-new"]
     )
+    _ensure_master(host, user, password, port, timeout, known_hosts_path, host_key_opts)
     scp_cmd = [
         "sshpass", "-e", "scp",
         "-P", str(port),
         *host_key_opts,
+        *_control_opts(host, user, port),
         f"{user}@{host}:{remote_name}",
         local_path,
     ]
@@ -236,10 +412,12 @@ def upload_file(
         ["-o", f"UserKnownHostsFile={known_hosts_path}", "-o", "StrictHostKeyChecking=yes"]
         if known_hosts_path else ["-o", "StrictHostKeyChecking=accept-new"]
     )
+    _ensure_master(host, user, password, port, timeout, known_hosts_path, host_key_opts)
     scp_cmd = [
         "sshpass", "-e", "scp",
         "-P", str(port),
         *host_key_opts,
+        *_control_opts(host, user, port),
         local_path,
         f"{user}@{host}:{remote_name}",
     ]

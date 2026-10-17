@@ -48,6 +48,7 @@ from routeros import (
     RouterCommandFailed,
     RouterTimeout,
     RouterUnreachable,
+    close_connection,
     download_file,
     ensure_host_key_trusted,
     parse_colon,
@@ -163,7 +164,23 @@ def disconnect():
     # Idempotent: Trennen ohne (noch) aktive Sitzung ist kein Fehler.
     session_id = request.headers.get("X-Cockpit-Session")
     with core._sessions_lock:
-        core.SESSIONS.pop(session_id, None)
+        conn = core.SESSIONS.pop(session_id, None)
+        # Die SSH-Master-Verbindung dieses Geraets darf nur weg, wenn sie keine andere noch
+        # offene Sitzung mehr braucht: zwei Sitzungen auf dasselbe Geraet mit demselben
+        # Benutzer teilen denselben Kontrollsocket, und ein "ssh -O exit" wuerde der anderen
+        # die Verbindung unter den Fuessen wegziehen. Die Pruefung laeuft noch unter dem Lock,
+        # damit sich zwischen Pop und Pruefung keine neue Sitzung dazwischenschiebt.
+        still_in_use = conn is not None and any(
+            other["host"] == conn["host"]
+            and other["user"] == conn["user"]
+            and int(other["ssh_port"]) == int(conn["ssh_port"])
+            for other in core.SESSIONS.values()
+        )
+    if conn is not None and not still_in_use:
+        # Bewusst ausserhalb des Locks: der Aufruf startet einen Unterprozess, und solange er
+        # laeuft, sollen andere Anfragen nicht auf die Sitzungsverwaltung warten muessen.
+        # close_connection() wirft nie und ist bei fehlendem Socket ein Nulleffekt.
+        close_connection(conn["host"], conn["user"], int(conn["ssh_port"]))
     return jsonify({"ok": True})
 
 
