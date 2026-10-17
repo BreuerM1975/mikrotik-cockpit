@@ -20,13 +20,21 @@
 |---|---|---|---|
 | ![screenshot-connect](screenshots/connect.jpg) | ![screenshot-dashboard](screenshots/dashboard.jpg) | ![screenshot-wifi](screenshots/wifi.jpg) | ![screenshot-security](screenshots/security.jpg) |
 
-*Taken live against a MikroTik hAP ac Lite on an isolated test VLAN — which is why it reports no
-internet and no connected devices. Nothing here is mocked up; only the network names were replaced
-with neutral ones before publishing.*
+*Taken live against two real devices — a MikroTik hAP ac Lite and a wAP ax — on an isolated test
+VLAN, which is why they report no internet and no connected devices. Nothing here is mocked up;
+only the Wi-Fi network names were replaced with neutral ones before publishing.*
 
 ![demo](screenshots/demo.gif)
 
 60-second walkthrough on YouTube (German voice-over, English UI available in the app): https://www.youtube.com/watch?v=eTpmH4RkWiM
+
+### The fleet page (Pro)
+
+![screenshot-fleet](screenshots/fleet.jpg)
+
+*Every connected device in one table: RouterOS version, uptime, load, DHCP clients and security
+score, collected in a single request. The versions sit underneath each other so an odd one out
+stands out, and clicking a row switches to that device. This page is part of Cockpit Pro.*
 
 ### Free vs. Pro at a glance
 
