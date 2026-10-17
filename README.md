@@ -193,13 +193,14 @@ Your MikroTik Router (RouterOS)
 
 | | WinBox | Cockpit |
 |---|---|---|
-| **Platform** | Windows only (Wine on Linux) | Cross-platform (Python) |
+| **Platform** | Native on Windows, Linux and macOS since WinBox 4 | Any browser, on anything that runs Python |
+| **Several routers** | One window per router | All connected routers in one view, switch with a click |
 | **Learning curve** | Steep — shows every RouterOS knob | Gentle — explains each setting |
 | **Safety warnings** | None | SSH warning, IP-change warning, reboot confirmation, managed-rule protection |
 | **Device links** | None | OUI-based direct links to web UIs (Shelly, ESPHome, etc.) |
 | **Cloud/account** | None | None — fully local |
 | **Deep RouterOS features** | All of them | Daily 80 % — VLANs, BGP etc. still need WinBox |
-| **Installation** | Download .exe | `./install-cockpit.sh`, then a menu entry |
+| **Installation** | Download and run | `git clone` plus `./install-cockpit.sh`, or Docker — no `sudo`, no cloud |
 
 ---
 
