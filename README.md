@@ -10,6 +10,16 @@
 
 **Language:** The interface speaks English and German. It follows your browser language and can be switched any time with the EN/DE button in the header.
 
+**Install it in three lines** (Linux; Windows and macOS via Docker, see [Quick start](#quick-start)):
+
+```bash
+git clone https://github.com/BreuerM1975/mikrotik-cockpit.git
+cd mikrotik-cockpit
+./install-cockpit.sh --start
+```
+
+There is also a plain-language product page, in German: **[mikrotik.smarthomeblox.com/cockpit](https://mikrotik.smarthomeblox.com/cockpit/)**
+
 ---
 
 ## Screenshots
@@ -142,8 +152,9 @@ Enter your router's IP address, username, and password — just like WinBox.
 
 ### Run in Docker
 
-Prefer to run Cockpit on a NAS, a Proxmox host or a small home server? The repository ships a
-`Dockerfile` and a `docker-compose.yml`:
+Prefer to run Cockpit on a NAS, a Proxmox host or a small home server — or are you on **Windows
+or macOS**, where there is no installer yet? The repository ships a `Dockerfile` and a
+`docker-compose.yml`:
 
 ```bash
 git clone https://github.com/BreuerM1975/mikrotik-cockpit.git
@@ -161,8 +172,15 @@ Two things to know: inside the container Cockpit listens on all interfaces (that
 Anyone who opens it still needs your router's username and password, but keep port 8787 inside
 your home network and never forward it from the internet. If you only want it on the Docker
 host itself (for example behind a reverse proxy with its own login), change the port mapping to
-`"127.0.0.1:8787:8787"`. Cockpit Pro works the same way: run `install-pro.sh` against your
-checkout first, then build the image.
+`"127.0.0.1:8787:8787"` — which is what you want on a desktop machine, where you open
+`http://localhost:8787/` anyway. Cockpit Pro works the same way: run `install-pro.sh` against
+your checkout first, then build the image.
+
+Verified on 2026-10-17 on a Linux Docker host: the image builds in seconds from cache, reports
+healthy, serves the UI, and reaches a MikroTik over SSH from inside the container. The image is
+164 MB. Docker Desktop on Windows was not tested first-hand; the steps there are the usual ones
+from Docker's own documentation, and they are written out in German on the
+[product page](https://mikrotik.smarthomeblox.com/cockpit/).
 
 ### First-time test
 
