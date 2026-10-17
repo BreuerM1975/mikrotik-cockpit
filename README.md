@@ -47,6 +47,7 @@ Pro needs a GitHub account, because the private repository is delivered through 
 | Feature | Description |
 |---|---|
 | **Dashboard** | Internet status, uptime, WAN address, connected devices, security score |
+| **Several devices at once** | Connect more than one router, switch with a single click on the device bar — no second login, each device keeps its own data |
 | **DHCP Leases** | Live list of all DHCP clients with manufacturer lookups |
 | **Devices** | Assign rooms, reserve IP addresses, disconnect a Wi-Fi client, open a device's own web UI |
 | **Wi-Fi** | View networks, change SSID and password — with a 5-minute undo window |
