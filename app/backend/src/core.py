@@ -23,6 +23,7 @@ import json
 import os
 import re
 import threading
+import time
 
 from flask import request
 
@@ -31,6 +32,7 @@ from routeros import (
     RouterCommandFailed,
     RouterTimeout,
     RouterUnreachable,
+    close_connection,
     parse_colon,
     parse_terse,
     run_command,
@@ -63,6 +65,13 @@ except ValueError:
     SESSION_IDLE_TIMEOUT_SECONDS = 8 * 60 * 60
 EXEMPT_API_PATHS = {"/api/v1/connect", "/api/v1/disconnect"}
 
+# Obergrenze gleichzeitig verbundener Geraete. Jede Sitzung haelt die Zugangsdaten ihres
+# Routers im Arbeitsspeicher und eine SSH-Master-Verbindung offen -- ohne Grenze koennte ein
+# fehlerhaftes Skript gegen /connect unbegrenzt viele davon anlegen. Es ist dieselbe Zahl,
+# die die Oberflaeche (MAX_ROUTERS) und die Flottenabfrage verwenden; sie steht hier, damit
+# es nur eine gibt.
+MAX_SESSIONS = 16
+
 
 class SessionGone(Exception):
     """Die Sitzung war bei der Vorpruefung noch da und ist beim Routerzugriff weg."""
@@ -84,6 +93,54 @@ def use_connection(conn: dict):
         yield conn
     finally:
         _bound_conn.conn = previous
+
+
+def master_shared_with_other_session(conn: dict) -> bool:
+    """Teilt eine andere noch offene Sitzung den Kontrollsocket dieses Geraets?
+
+    Zwei Sitzungen auf dasselbe Geraet mit demselben Benutzer benutzen dieselbe
+    SSH-Master-Verbindung. Ein "ssh -O exit" fuer die eine wuerde der anderen die Verbindung
+    unter den Fuessen wegziehen. Nur unter _sessions_lock aufrufen.
+    """
+    return any(
+        other["host"] == conn["host"]
+        and other["user"] == conn["user"]
+        and int(other["ssh_port"]) == int(conn["ssh_port"])
+        for other in SESSIONS.values()
+    )
+
+
+def purge_expired_sessions() -> list[dict]:
+    """Entfernt Sitzungen, die ueber das Leerlauf-Zeitfenster hinaus nicht benutzt wurden.
+
+    Der Ablauf einer Sitzung fiel bisher erst auf, wenn sie jemand anspricht (siehe
+    require_session in app.py) -- und genau das tut eine abgelaufene Sitzung nie wieder. Mit
+    einer Obergrenze gleichzeitiger Sitzungen ist das nicht mehr nur unschoen: 16 vergessene
+    Sitzungen wuerden den Platz dauerhaft blockieren, obwohl keine davon noch benutzt wird.
+    Ihre Master-Verbindung geht mit, sonst bleibt am Router eine Sitzung offen, zu der es im
+    Cockpit keine Oberflaeche mehr gibt.
+    """
+    now = time.monotonic()
+    with _sessions_lock:
+        gone = [
+            session_id for session_id, conn in SESSIONS.items()
+            if now - conn.get("last_activity", now) > SESSION_IDLE_TIMEOUT_SECONDS
+        ]
+        dropped = [SESSIONS.pop(session_id) for session_id in gone]
+        # Je Kontrollsocket hoechstens ein "ssh -O exit": zwei abgelaufene Sitzungen auf
+        # dasselbe Geraet teilen ihn, und nach dem ersten Aufruf ist er ohnehin weg.
+        orphaned, seen = [], set()
+        for conn in dropped:
+            key = (conn["host"], conn["user"], int(conn["ssh_port"]))
+            if key in seen or master_shared_with_other_session(conn):
+                continue
+            seen.add(key)
+            orphaned.append(conn)
+    # Bewusst ausserhalb des Locks: jeder Aufruf startet einen Unterprozess, und solange er
+    # laeuft, sollen andere Anfragen nicht auf die Sitzungsverwaltung warten muessen.
+    for conn in orphaned:
+        close_connection(conn["host"], conn["user"], int(conn["ssh_port"]))
+    return dropped
 
 
 def current_conn() -> dict:

@@ -2550,3 +2550,114 @@ class SecurityCheckDefaultUserErrorsTest(unittest.TestCase):
             self.assertEqual(resp.status_code, code)
             self.assertEqual(resp.get_json()["error"], error)
 
+
+
+class SessionLimitTest(unittest.TestCase):
+    """Obergrenze gleichzeitiger Sitzungen (Schritt 4 der Multisession-Planung).
+
+    Jede Sitzung haelt Zugangsdaten im Arbeitsspeicher und eine SSH-Master-Verbindung zum
+    Router. Die Grenze begrenzt beides -- und darf dabei nicht von Sitzungen blockiert
+    werden, die laengst abgelaufen sind und sich nie wieder melden.
+    """
+
+    def setUp(self):
+        app_module.app.testing = True
+        self.client = app_module.app.test_client()
+        core_module.SESSIONS.clear()
+
+    def tearDown(self):
+        core_module.SESSIONS.clear()
+
+    @staticmethod
+    def _fill(count, prefix="alt", idle=0.0):
+        for index in range(count):
+            core_module.SESSIONS[f"{prefix}-{index}"] = {
+                "host": f"geraet-{index}", "user": "admin", "password": "x", "ssh_port": 22,
+                "last_activity": time.monotonic() - idle,
+            }
+
+    def _connect(self):
+        with patch("routes_basis.ensure_host_key_trusted"), patch(
+            "routes_basis.run_command",
+            side_effect=lambda *args, **kwargs: FAKE_OUTPUT.get(args[-1], ""),
+        ) as run_command:
+            resp = self.client.post(
+                "/api/v1/connect",
+                json={"host": "192.168.99.230", "user": "admin", "password": "geheim"},
+            )
+        return resp, run_command
+
+    def test_last_free_slot_still_connects(self):
+        self._fill(core_module.MAX_SESSIONS - 1)
+        resp, _ = self._connect()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(core_module.SESSIONS), core_module.MAX_SESSIONS)
+
+    def test_connect_beyond_the_limit_is_rejected_without_touching_the_router(self):
+        self._fill(core_module.MAX_SESSIONS)
+        resp, run_command = self._connect()
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.get_json()["error"], "too_many_sessions")
+        self.assertIn(str(core_module.MAX_SESSIONS), resp.get_json()["message"])
+        # Kein Routerzugriff und kein Eintrag in known_hosts fuer einen Versuch, der ohnehin
+        # abgelehnt wird.
+        run_command.assert_not_called()
+        self.assertEqual(len(core_module.SESSIONS), core_module.MAX_SESSIONS)
+
+    def test_expired_sessions_do_not_block_the_last_slot(self):
+        # Alle Plaetze belegt, aber von Sitzungen, die niemand mehr benutzt. Ohne das
+        # Abraeumen waere das Cockpit dauerhaft dicht, denn eine abgelaufene Sitzung meldet
+        # sich nie wieder und wird deshalb auch nie von require_session() entfernt.
+        self._fill(core_module.MAX_SESSIONS, idle=core_module.SESSION_IDLE_TIMEOUT_SECONDS + 1)
+        with patch("core.close_connection") as close_connection:
+            resp, _ = self._connect()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(list(core_module.SESSIONS), [resp.get_json()["session"]])
+        self.assertEqual(close_connection.call_count, core_module.MAX_SESSIONS)
+
+    def test_limit_also_holds_when_slots_fill_during_the_router_access(self):
+        # Zwischen der Vorpruefung und dem Einfuegen liegt der Routerzugriff. Fuellen in der
+        # Zeit parallele Verbindungsversuche die Plaetze, darf trotzdem keine 17. Sitzung
+        # entstehen -- verbindlich ist erst die Pruefung unter dem Lock.
+        def fill_up(*args, **kwargs):
+            self._fill(core_module.MAX_SESSIONS, prefix="dazwischen")
+            return FAKE_OUTPUT.get(args[-1], "")
+
+        with patch("routes_basis.ensure_host_key_trusted"), patch(
+            "routes_basis.run_command", side_effect=fill_up,
+        ):
+            resp = self.client.post(
+                "/api/v1/connect",
+                json={"host": "192.168.99.230", "user": "admin", "password": "geheim"},
+            )
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(len(core_module.SESSIONS), core_module.MAX_SESSIONS)
+
+    def test_purge_closes_the_master_connection_of_an_expired_session(self):
+        self._fill(1, idle=core_module.SESSION_IDLE_TIMEOUT_SECONDS + 1)
+        with patch("core.close_connection") as close_connection:
+            dropped = core_module.purge_expired_sessions()
+        self.assertEqual(len(dropped), 1)
+        self.assertFalse(core_module.SESSIONS)
+        close_connection.assert_called_once_with("geraet-0", "admin", 22)
+
+    def test_purge_keeps_sessions_that_are_still_in_use(self):
+        self._fill(2, idle=core_module.SESSION_IDLE_TIMEOUT_SECONDS + 1)
+        self._fill(1, prefix="frisch")
+        with patch("core.close_connection") as close_connection:
+            core_module.purge_expired_sessions()
+        self.assertEqual(list(core_module.SESSIONS), ["frisch-0"])
+        # "frisch-0" haengt am selben Geraet wie die abgelaufene "alt-0" und benutzt denselben
+        # Kontrollsocket -- ein "ssh -O exit" dafuer wuerde der laufenden Sitzung die
+        # Verbindung unter den Fuessen wegziehen.
+        close_connection.assert_called_once_with("geraet-1", "admin", 22)
+
+    def test_purge_closes_a_shared_master_only_once(self):
+        for name in ("doppelt-a", "doppelt-b"):
+            core_module.SESSIONS[name] = {
+                "host": "geraet-x", "user": "admin", "password": "x", "ssh_port": 22,
+                "last_activity": time.monotonic() - core_module.SESSION_IDLE_TIMEOUT_SECONDS - 1,
+            }
+        with patch("core.close_connection") as close_connection:
+            core_module.purge_expired_sessions()
+        close_connection.assert_called_once_with("geraet-x", "admin", 22)

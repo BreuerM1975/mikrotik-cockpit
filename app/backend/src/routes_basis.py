@@ -69,6 +69,16 @@ except ValueError:
     WIFI_PASSWORD_UNDO_WINDOW_SECONDS = 300
 
 
+def _too_many_sessions():
+    return jsonify({
+        "error": "too_many_sessions",
+        "message": (
+            f"Es sind höchstens {core.MAX_SESSIONS} Geräte gleichzeitig verbunden. "
+            "Bitte zuerst ein Gerät trennen."
+        ),
+    }), 429
+
+
 @bp.post("/api/v1/connect")
 def connect():
     body = request.get_json(force=True, silent=True)
@@ -103,6 +113,16 @@ def connect():
     confirm_fingerprint = body.get("confirm_fingerprint")
     if confirm_fingerprint is not None and not isinstance(confirm_fingerprint, str):
         return jsonify({"error": "bad_request", "message": "'confirm_fingerprint' muss Text sein"}), 400
+
+    # Obergrenze gleichzeitig verbundener Geraete (Schritt 4 der Multisession-Planung). Die
+    # Pruefung steht vor dem ersten Routerzugriff: ein abgelehnter Verbindungsversuch soll
+    # weder den Router ansprechen noch den known_hosts-Speicher anfassen. Vorher die
+    # abgelaufenen Sitzungen abraeumen, sonst blockieren vergessene Sitzungen den Platz.
+    core.purge_expired_sessions()
+    with core._sessions_lock:
+        session_count = len(core.SESSIONS)
+    if session_count >= core.MAX_SESSIONS:
+        return _too_many_sessions()
 
     # Audit A18: vor dem ersten Login pruefen, ob der SSH-Host-Key dieses Routers schon
     # bestaetigt wurde. Ohne diese Pruefung wuerde der anschliessende ssh-Aufruf einen
@@ -147,10 +167,17 @@ def connect():
 
     session_id = secrets.token_urlsafe(24)
     with core._sessions_lock:
-        core.SESSIONS[session_id] = {
-            "host": host, "user": user, "password": password, "ssh_port": ssh_port,
-            "last_activity": time.monotonic(),
-        }
+        # Zweite Pruefung, diesmal unter dem Lock: zwischen der ersten und diesem Einfuegen
+        # liegt der Routerzugriff, und in der Zeit koennen parallele Verbindungsversuche
+        # Plaetze belegt haben. Erst hier ist die Grenze verbindlich.
+        full = len(core.SESSIONS) >= core.MAX_SESSIONS
+        if not full:
+            core.SESSIONS[session_id] = {
+                "host": host, "user": user, "password": password, "ssh_port": ssh_port,
+                "last_activity": time.monotonic(),
+            }
+    if full:
+        return _too_many_sessions()
     return jsonify({
         "ok": True,
         "session": session_id,
@@ -166,16 +193,9 @@ def disconnect():
     with core._sessions_lock:
         conn = core.SESSIONS.pop(session_id, None)
         # Die SSH-Master-Verbindung dieses Geraets darf nur weg, wenn sie keine andere noch
-        # offene Sitzung mehr braucht: zwei Sitzungen auf dasselbe Geraet mit demselben
-        # Benutzer teilen denselben Kontrollsocket, und ein "ssh -O exit" wuerde der anderen
-        # die Verbindung unter den Fuessen wegziehen. Die Pruefung laeuft noch unter dem Lock,
-        # damit sich zwischen Pop und Pruefung keine neue Sitzung dazwischenschiebt.
-        still_in_use = conn is not None and any(
-            other["host"] == conn["host"]
-            and other["user"] == conn["user"]
-            and int(other["ssh_port"]) == int(conn["ssh_port"])
-            for other in core.SESSIONS.values()
-        )
+        # offene Sitzung mehr braucht. Die Pruefung laeuft noch unter dem Lock, damit sich
+        # zwischen Pop und Pruefung keine neue Sitzung dazwischenschiebt.
+        still_in_use = conn is not None and core.master_shared_with_other_session(conn)
     if conn is not None and not still_in_use:
         # Bewusst ausserhalb des Locks: der Aufruf startet einen Unterprozess, und solange er
         # laeuft, sollen andere Anfragen nicht auf die Sitzungsverwaltung warten muessen.

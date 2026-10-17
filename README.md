@@ -3,10 +3,10 @@
 > A live, browser-based management UI for MikroTik RouterOS — with plain-language explanations, safety warnings, and device direct-links. Think WinBox, but for the 80 % of daily tasks.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-252%20passing-brightgreen)](#)
+[![Tests](https://img.shields.io/badge/Tests-259%20passing-brightgreen)](#)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.x-orange)](#)
 
-**Status:** Working prototype — 252 backend tests, security audited, live-verified against RouterOS 7.23.1 and 7.24.5 on real hardware (MikroTik hAP ac Lite and wAP ax). Not yet a polished commercial product.
+**Status:** Working prototype — 259 backend tests, security audited, live-verified against RouterOS 7.23.1 and 7.24.5 on real hardware (MikroTik hAP ac Lite and wAP ax). Not yet a polished commercial product.
 
 **Language:** The interface speaks English and German. It follows your browser language and can be switched any time with the EN/DE button in the header.
 
@@ -47,7 +47,7 @@ Pro needs a GitHub account, because the private repository is delivered through 
 | Feature | Description |
 |---|---|
 | **Dashboard** | Internet status, uptime, WAN address, connected devices, security score |
-| **Several devices at once** | Connect more than one router, switch with a single click on the device bar — no second login, each device keeps its own data |
+| **Several devices at once** | Connect more than one router (up to 16), switch with a single click on the device bar — no second login, each device keeps its own data |
 | **DHCP Leases** | Live list of all DHCP clients with manufacturer lookups |
 | **Devices** | Assign rooms, reserve IP addresses, disconnect a Wi-Fi client, open a device's own web UI |
 | **Wi-Fi** | View networks, change SSID and password — with a 5-minute undo window |
@@ -238,7 +238,7 @@ python3 -m unittest discover -s app/backend/src -q
 python3 app/frontend/test-language-static.py
 ```
 
-Current test count: **252 backend tests**, all green. They mock the router, so no hardware is
+Current test count: **259 backend tests**, all green. They mock the router, so no hardware is
 needed.
 
 The interface is written in German and translated at the DOM level: `i18n.js` looks each string up
