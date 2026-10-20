@@ -65,7 +65,7 @@ The 80 % of things you do most often — in fewer clicks:
 - **Not a WinBox replacement.** WinBox gives you every single RouterOS knob. Cockpit gives you the ones you need daily. For VLANs, routing tables, BGP, MPLS, and the deep stuff — you still need WinBox.
 - **Not a config generator.** It connects *live* to a running router, reads its state, and makes changes in real time. Nothing gets uploaded. Nothing gets exported.
 - **Not a cloud dashboard.** No multi-router fleet management. One router, one browser tab.
-- **Not finished.** This is an open-source prototype (218 tests, security audited, live hardware verified against RouterOS 7.23.1). It works, but it's not a polished commercial product.
+- **Not finished.** This is an open-source prototype (265 tests, security audited, live hardware verified against RouterOS 7.23.1 and 7.24.5). It works, but it's not a polished commercial product.
 
 ## The philosophy in one sentence
 

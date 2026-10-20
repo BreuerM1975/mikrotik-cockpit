@@ -305,8 +305,10 @@ window.COCKPIT_DICT_EN = {
   "Firewall-Regeln": "Firewall rules",
   "Vollzugriff": "Full access",
   "Hier änderst du die echte Router-Firewall.": "This changes the router's real firewall.",
-  "Eine falsche Regel kann Geräte aussperren oder Dienste aus dem Internet öffnen. Neue Regeln werden automatisch vor die letzte Regel der Kette gesetzt. Eine manuelle Reihenfolge ist in dieser Version nicht verfügbar.":
-    "A wrong rule can lock devices out or expose services to the internet. New rules are placed automatically before the last rule of the chain. Manual ordering is not available in this version.",
+  "Eine falsche Regel kann Geräte aussperren oder Dienste aus dem Internet öffnen. Neue Regeln setzt Cockpit automatisch vor die fangende Sperrregel der Kette, eine neue Sperre ohne solche Fangregel ans Ende. Eine manuelle Reihenfolge ist in dieser Version nicht verfügbar.":
+    "A wrong rule can lock devices out or expose services to the internet. Cockpit places new rules automatically before the chain's catch-all block rule, and a new block rule at the end when there is no such catch-all. Manual ordering is not available in this version.",
+  "Eingebaute Regel von RouterOS. Sie lässt sich nicht umschalten und nicht löschen.":
+    "Built-in RouterOS rule. It cannot be toggled or deleted.",
   "Verkehr durch den Router": "Traffic passing through the router",
   "Forward-Regel anlegen": "Add forward rule",
   "Aktion": "Action",
@@ -693,9 +695,9 @@ window.COCKPIT_DICT_EN = {
   "'ssh_port' muss zwischen 1 und 65535 liegen": "'ssh_port' must be between 1 and 65535",
   "Der Request-Body muss ein JSON-Objekt sein": "The request body must be a JSON object",
   "'enabled' fehlt oder ist kein Wahrheitswert": "'enabled' is missing or is not a boolean",
-  "'external_port'/'internal_port' muessen 1-65535 sein, 'internal_ip' eine gueltige IPv4-Adresse":
+  "'external_port'/'internal_port' müssen 1-65535 sein, 'internal_ip' eine gültige IPv4-Adresse":
     "'external_port'/'internal_port' must be 1-65535, and 'internal_ip' a valid IPv4 address",
-  "'network' (CIDR), 'range_start' und 'range_end' muessen gueltig sein":
+  "'network' (CIDR), 'range_start' und 'range_end' müssen gültig sein":
     "'network' (CIDR), 'range_start' and 'range_end' must be valid",
   "Adresse muss im Format 192.168.1.1/24 angegeben werden":
     "The address must be given as 192.168.1.1/24",
@@ -733,7 +735,7 @@ window.COCKPIT_DICT_EN = {
   "Gastnetz-Interface nicht gefunden": "Guest network interface not found",
   "Kein Gastnetz-Interface für diese Sitzung ausgewählt.":
     "No guest network interface selected for this session.",
-  "Noch kein Gastnetz-Interface ausgewaehlt": "No guest network interface selected yet",
+  "Noch kein Gastnetz-Interface ausgewählt": "No guest network interface selected yet",
 
   // WLAN-Trennung
   "Die WLAN-Trennung konnte nicht bestätigt werden. Bitte den Gerätestatus prüfen.":
@@ -804,21 +806,21 @@ window.COCKPIT_DICT_EN = {
   // bestimmten Fehleingaben entstehen und deshalb weder im Browsertest noch am Testgeraet auftauchen.
   "'confirm_fingerprint' muss Text sein": "'confirm_fingerprint' must be text",
   "'enabled' fehlt": "'enabled' is missing",
-  "'gateway'/'dns_servers' ungueltig": "'gateway'/'dns_servers' invalid",
-  "'interface' fehlt oder ungueltig": "'interface' is missing or invalid",
-  "'ip' fehlt oder ungueltig": "'ip' is missing or invalid",
-  "'mac' ungueltig": "'mac' is invalid",
-  "'name' fehlt oder ungueltig": "'name' is missing or invalid",
+  "'gateway'/'dns_servers' ungültig": "'gateway'/'dns_servers' invalid",
+  "'interface' fehlt oder ungültig": "'interface' is missing or invalid",
+  "'ip' fehlt oder ungültig": "'ip' is missing or invalid",
+  "'mac' ungültig": "'mac' is invalid",
+  "'name' fehlt oder ungültig": "'name' is missing or invalid",
   "'range_start' muss kleiner oder gleich 'range_end' sein":
     "'range_start' must be less than or equal to 'range_end'",
   "'webui_port' muss 1-65535 sein": "'webui_port' must be 1-65535",
   "'webui_scheme' muss http oder https sein": "'webui_scheme' must be http or https",
-  "1 bis 3 gueltige IPv4-Adressen erwartet": "Expected 1 to 3 valid IPv4 addresses",
+  "1 bis 3 gültige IPv4-Adressen erwartet": "Expected 1 to 3 valid IPv4 addresses",
   "Mindestens 8 Zeichen": "At least 8 characters",
   "Backup unbekannt": "Unknown backup",
   "DHCP-Bereich unbekannt": "Unknown DHCP range",
   "Dienst unbekannt": "Unknown service",
-  "Dienstname ungueltig": "Invalid service name",
+  "Dienstname ungültig": "Invalid service name",
   "Interface unbekannt": "Unknown interface",
   "PPPoE-Verbindung unbekannt": "Unknown PPPoE connection",
   "Portweiterleitung unbekannt": "Unknown port forward",
@@ -828,12 +830,12 @@ window.COCKPIT_DICT_EN = {
   "Port bereits belegt": "Port already in use",
   "Diese Client-IP liegt bereits im Adressbereich eines WireGuard-Peers.":
     "That client IP already falls inside another WireGuard peer's address range.",
-  "Fuer dieses Interface existiert bereits ein DHCP-Bereich":
+  "Für dieses Interface existiert bereits ein DHCP-Bereich":
     "A DHCP range already exists for this interface",
-  "Fuer dieses Interface laeuft bereits ein DHCP-Client":
+  "Für dieses Interface läuft bereits ein DHCP-Client":
     "A DHCP client is already running on this interface",
-  "Kein DHCP-Client fuer dieses Interface": "No DHCP client on this interface",
-  "Kein bekannter DHCP-Lease fuer diese MAC -- Geraet muss vorher online gewesen sein":
+  "Kein DHCP-Client für dieses Interface": "No DHCP client on this interface",
+  "Kein bekannter DHCP-Lease für diese MAC -- Gerät muss vorher online gewesen sein":
     "No known DHCP lease for that MAC — the device has to have been online first",
   "Konnte nicht geprüft werden, ob unsichere Altdienste wie Telnet oder FTP an sind. Bitte später erneut prüfen.":
     "Could not check whether insecure legacy services such as Telnet or FTP are switched on. Please try again later.",
@@ -980,6 +982,42 @@ window.COCKPIT_DICT_EN = {
   "Der Router hat die Änderung nicht übernommen -- bitte Liste prüfen": "The router did not apply the change -- please check the list",
   "Der Router hat die Gruppe nicht übernommen -- bitte Liste prüfen": "The router did not apply the group -- please check the list",
   "Der Router hat den Benutzer nicht gelöscht -- bitte Liste prüfen": "The router did not delete the user -- please check the list",
+  // --- Fehlertexte, die als (code, text)-Tupel aus den Routen gehen ------------------------
+  // Nachgetragen am 2026-10-20, nachdem der Sammler von test-language-static.py auf den
+  // Syntaxbaum umgestellt wurde. Vorher sah er nur {"message": "..."} und war fuer diese
+  // Texte blind; der englische Kunde bekam sie auf Deutsch zu sehen.
+  "'action' fehlt oder ist keine unterstützte Filter-Aktion":
+    "'action' is missing or not a supported filter action",
+  "'action' fehlt oder ist keine unterstützte NAT-Aktion":
+    "'action' is missing or not a supported NAT action",
+  "'chain' muss 'srcnat' oder 'dstnat' sein": "'chain' must be 'srcnat' or 'dstnat'",
+  "'protocol' muss tcp, udp oder icmp sein": "'protocol' must be tcp, udp or icmp",
+  "'to_addresses' ist für 'dst-nat'/'src-nat' Pflicht":
+    "'to_addresses' is required for 'dst-nat'/'src-nat'",
+  "Der Router hat die Regel nicht gelöscht -- eingebaute und dynamische Regeln lassen sich nicht entfernen, bitte Regelliste prüfen":
+    "The router did not delete the rule -- built-in and dynamic rules cannot be removed, please check the rule list",
+  "Regel angelegt, aber danach nicht wiedergefunden -- bitte Liste prüfen":
+    "Rule created but not found afterwards -- please check the list",
+  "Das Gateway muss eine nutzbare Adresse im angegebenen Netz sein und darf nicht im DHCP-Bereich selbst liegen":
+    "The gateway must be a usable address inside the given network and must not sit inside the DHCP range itself",
+  // Die drei Bestaetigungstexte. Sie landen ueber confirmAction() im Dialog, also im DOM.
+  "Ein Neustart trennt alle Verbindungen und dauert etwa eine Minute. Nicht gespeicherte Änderungen gehen verloren. Zum Fortfahren 'confirm': true im Body mitschicken.":
+    "A restart drops all connections and takes about a minute. Unsaved changes are lost. To proceed, send 'confirm': true in the body.",
+  "Eine Wiederherstellung ersetzt die komplette Konfiguration dieses Routers und startet ihn sofort neu. Zum Fortfahren 'confirm': true im Body mitschicken.":
+    "A restore replaces this router's entire configuration and restarts it immediately. To proceed, send 'confirm': true in the body.",
+  "Die RouterBOARD-Firmware wird geschrieben und der Router startet danach neu. Das dauert etwa eine Minute, in der er nicht erreichbar ist. Zum Fortfahren 'confirm': true im Body mitschicken.":
+    "The RouterBOARD firmware will be written and the router restarts afterwards. That takes about a minute, during which it is unreachable. To proceed, send 'confirm': true in the body.",
+  // 2026-10-20 nachgezogen: die drei Texte kamen mit den Sicherheitsfixes vom 19.10. dazu und
+  // fehlten hier, test-language-static.py meldete sie als ungedeckt.
+  "'host' muss eine IP-Adresse oder ein Hostname sein": "'host' must be an IP address or a hostname",
+  "Der Dienst ist nach der Änderung nicht mehr auffindbar -- bitte Liste prüfen":
+    "The service can no longer be found after the change -- please check the list",
+  "Der Router hat die Änderung nicht übernommen -- bitte Regelliste prüfen":
+    "The router did not apply the change -- please check the rule list",
+  // Bestaetigungshuerde beim Anlegen einer Sperrregel (409 confirmation_required). Der Text
+  // landet ueber confirmAction() im Dialog, also im DOM, und braucht deshalb einen Eintrag.
+  "Diese Regel kann den eigenen Verwaltungszugang zum Router sperren: sie trifft die Ports von SSH, WinBox oder WebFig. Eine Quelladresse oder ein Interface schützt davor nicht, weil der Router genau darüber verwaltet wird. Zum Fortfahren 'confirm': true im Body mitschicken.":
+    "This rule can block your own management access to the router: it covers the ports of SSH, WinBox or WebFig. A source address or an interface does not protect against that, because the router is managed over exactly those. To proceed, send 'confirm': true in the body.",
   "Der andere Benutzer mit vollen Rechten war noch nie angemeldet. Melde dich erst einmal mit ihm an, damit das Passwort nachweislich stimmt, dann lässt sich":
     "The other full-access user has never logged in. Log in with it once first, so the password is proven to work, then",
   "Benutzerliste konnte nicht gelesen werden.": "The user list could not be read.",

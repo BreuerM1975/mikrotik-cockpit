@@ -8,7 +8,7 @@ Meldungen wie "Noch aktiv: ftp, telnet." entstehen erst an echter Hardware und b
 ungeprueft, bis sie live auffielen. Diese Pruefung liest stattdessen den Quelltext.
 """
 
-import json, pathlib, re, subprocess, sys
+import ast, json, pathlib, re, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent
 BACKEND = ROOT.parent / "backend" / "src"
@@ -16,20 +16,65 @@ BACKEND = ROOT.parent / "backend" / "src"
 # Platzhalter aus f-Strings werden zu einem Marker, den die Musterpruefung unten fuellt.
 PLACEHOLDER = re.compile(r"\{[^}]*\}")
 
+# Schluessel, unter denen ein Text in der JSON-Antwort beim Nutzer landet.
+TEXT_SCHLUESSEL = ("message", "plain", "detail", "label")
+
+# Erstes Element eines (code, text)-Tupels: ein Fehlercode wie "bad_request".
+FEHLERCODE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _literal(node) -> str | None:
+    """Der Text eines String-Literals, auch ueber mehrere Zeilen und als f-String.
+
+    Implizite Verkettung ("a" "b") loest Python schon beim Parsen auf, ein f-String wird
+    zu ast.JoinedStr -- dessen Ausdruecke werden zu "{X}", damit die Musterpruefung unten
+    dieselben Platzhalter sieht wie bei einem echten f-String im Quelltext.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            teil.value if isinstance(teil, ast.Constant) and isinstance(teil.value, str) else "{X}"
+            for teil in node.values
+        )
+    return None
+
 
 def backend_texts():
-    """Alle Texte, die als message/plain/detail/label beim Nutzer landen koennen."""
+    """Alle Texte, die beim Nutzer landen koennen.
+
+    Zwei Wege, und der zweite kam erst am 2026-10-20 dazu: bis dahin suchte diese Funktion per
+    Regex nur nach `"message": "..."`. Damit war sie blind fuer jeden Text, den eine Route als
+    `(code, text)`-Tupel zurueckgibt -- dreizehn Stellen allein in `routes_pro.py`. Drei
+    Meldungen vom 19.10. standen deshalb ohne englische Fassung im Code, ohne dass diese
+    Pruefung etwas gemeldet haette. Beide Wege laufen jetzt ueber den Syntaxbaum statt ueber
+    einen Regex, der an einer mehrzeiligen Verkettung abreisst.
+    """
     found = set()
     for name in ("routes_basis.py", "routes_pro.py", "core.py"):
         path = BACKEND / name
         if not path.exists():
             continue
-        source = path.read_text(encoding="utf-8")
-        # Einfache und ueber mehrere Zeilen zusammengesetzte Literale
-        for match in re.finditer(r'"(?:message|plain|detail|label)":\s*((?:f?"[^"]*"\s*)+)', source):
-            parts = re.findall(r'f?"([^"]*)"', match.group(1))
-            text = "".join(parts).strip()
-            if text:
+        baum = ast.parse(path.read_text(encoding="utf-8"))
+        for knoten in ast.walk(baum):
+            # Weg 1: {"message": "..."} und die drei verwandten Schluessel.
+            if isinstance(knoten, ast.Dict):
+                for schluessel, wert in zip(knoten.keys, knoten.values):
+                    if isinstance(schluessel, ast.Constant) and schluessel.value in TEXT_SCHLUESSEL:
+                        text = (_literal(wert) or "").strip()
+                        if text:
+                            found.add(text)
+            # Weg 2: return None, ("bad_request", "...") -- der Aufrufer setzt daraus die
+            # Antwort zusammen, der Text landet genauso beim Nutzer.
+            if isinstance(knoten, ast.Tuple) and len(knoten.elts) == 2:
+                code, wert = (_literal(teil) for teil in knoten.elts)
+                if not code or not wert or not FEHLERCODE.match(code):
+                    continue
+                text = wert.strip()
+                # Ein Tupel aus Name und RouterOS-Befehl sieht genauso aus, ist aber kein
+                # Nutzertext (core.py:426, Treiberwahl). Befehle beginnen mit "/".
+                if text.startswith("/") or " " not in text:
+                    continue
                 found.add(text)
     return found
 

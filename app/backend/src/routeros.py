@@ -51,7 +51,10 @@ def _scan_host_key(host: str, port: int, timeout: int = 10) -> str:
     # Fragt den Schluessel ab, den der Router JETZT anbietet -- ohne ihn zu vertrauen. Bei
     # mehreren angebotenen Algorithmen wird bewusst der staerkste gewaehlt.
     result = subprocess.run(
-        ["ssh-keyscan", "-p", str(port), "-T", str(timeout), host],
+        # "--" trennt Optionen vom Hostargument: ohne das liest ssh-keyscan einen Wert, der
+        # mit "-" beginnt, als eigene Option. Der Wert wird zusaetzlich am Eingang geprueft
+        # (routes_basis._verbindungs_host), das hier ist die zweite Schranke.
+        ["ssh-keyscan", "-p", str(port), "-T", str(timeout), "--", host],
         capture_output=True, text=True, timeout=timeout + 5,
     )
     lines = [line for line in result.stdout.splitlines() if line and not line.startswith("#")]
@@ -334,7 +337,19 @@ def close_connection(host: str, user: str, port: int) -> bool:
 def run_command(
     host: str, user: str, password: str, port: int, command: str,
     timeout: int = 10, known_hosts_path: str | None = None,
+    eigene_verbindung: bool = False,
 ) -> str:
+    """Fuehrt einen Befehl auf dem Router aus.
+
+    `eigene_verbindung=True` schaltet die Mitbenutzung eines bestehenden Kontrollsockets ab.
+    Das braucht genau eine Stelle: die Passwortpruefung beim Verbinden (routes_basis.connect).
+    2026-10-19 gefunden: _control_path() hasht bewusst nur user@host:port ohne Passwort, und
+    bei lebendem Socket kehrt _ensure_master() sofort zurueck. Der Pruefbefehl lief dann ueber
+    die bereits authentifizierte Verbindung, SSHPASS wurde nie benutzt, und ein /connect mit
+    FALSCHEM Passwort antwortete 200, solange die echte Sitzung den Socket offen hielt. Zwei
+    Folgen: die Passwortabfrage war in diesem Zeitfenster wirkungslos, und ein Tippfehler im
+    Passwort wurde als gueltig gespeichert und fiel erst Tage spaeter auf.
+    """
     # Audit A18: "accept-new" hat den allerersten Kontakt zu einem Router still und ohne
     # jede Rueckfrage vertraut -- ensure_host_key_trusted() muss vorher gelaufen sein (siehe
     # app.py:connect()), danach steht der Schluessel bereits fest in known_hosts_path und
@@ -344,12 +359,16 @@ def run_command(
         ["-o", f"UserKnownHostsFile={known_hosts_path}", "-o", "StrictHostKeyChecking=yes"]
         if known_hosts_path else ["-o", "StrictHostKeyChecking=accept-new"]
     )
-    _ensure_master(host, user, password, port, timeout, known_hosts_path, host_key_opts)
+    if eigene_verbindung:
+        control_opts = ["-o", "ControlPath=none"]
+    else:
+        _ensure_master(host, user, password, port, timeout, known_hosts_path, host_key_opts)
+        control_opts = _control_opts(host, user, port)
     ssh_cmd = [
         "sshpass", "-e", "ssh",
         "-p", str(port),
         *host_key_opts,
-        *_control_opts(host, user, port),
+        *control_opts,
         "-o", f"ConnectTimeout={timeout}",
         f"{user}@{host}",
         command,

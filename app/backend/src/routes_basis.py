@@ -95,6 +95,13 @@ def connect():
             "message": "'host', 'user' und 'password' müssen Text sein",
         }), 400
     host = host.strip()
+    try:
+        host = _verbindungs_host(host)
+    except ValueError:
+        return jsonify({
+            "error": "bad_request",
+            "message": "'host' muss eine IP-Adresse oder ein Hostname sein",
+        }), 400
     user = user.strip() or "admin"
     # Bewusst NICHT .strip(): ein Passwort mit fuehrenden/abschliessenden Leerzeichen ist
     # gueltig und muss unveraendert an RouterOS gehen -- ein Nutzer, der so ein Passwort
@@ -156,9 +163,13 @@ def connect():
 
     # Bewusst direkt run_command() statt core.router(): es gibt noch keine Sitzung, deren
     # Zugangsdaten core.router() lesen koennte -- die werden hier gerade erst geprueft.
+    # eigene_verbindung=True: dieser eine Befehl muss sich wirklich anmelden und darf keinen
+    # bestehenden Kontrollsocket mitbenutzen -- sonst prueft er das Passwort nicht (siehe
+    # routeros.run_command).
     identity = parse_colon(run_command(
         host, user, password, ssh_port, "/system identity print",
         known_hosts_path=core.cfg.known_hosts_path,
+        eigene_verbindung=True,
     ))
     resource = parse_colon(run_command(
         host, user, password, ssh_port, "/system resource print",
@@ -331,6 +342,51 @@ def handle_wan_interface_unavailable(exc):
     return jsonify({"error": exc.code, "message": exc.message}), exc.status
 
 
+def _verbindungs_host(wert: str) -> str:
+    """Prueft den Host aus /connect: IP-Adresse oder Hostname, sonst nichts.
+
+    2026-10-19 ergaenzt. Der Wert ging vorher nur mit .strip() weiter und landet als eigenes
+    Argument in `ssh-keyscan` (routeros._scan_host_key). Ein Wert, der mit "-" beginnt, wird
+    dort als Option gelesen statt als Host. Praktisch nur von einem lokalen Prozess
+    erreichbar -- das Backend lauscht auf 127.0.0.1 und /connect ist CORS-geschuetzt --, aber
+    ohne Pruefung landet auch jeder Tippfehler in einem Unterprozess statt in einer klaren
+    Fehlermeldung.
+
+    Anders als _vpn_endpoint_host() in routes_pro.py sind private Adressen hier ausdruecklich
+    erlaubt: der Router steht im eigenen Netz. Auch ein Hostname ohne Punkt ist gueltig
+    ("router", mDNS, Eintrag in /etc/hosts).
+
+    2026-10-20: Der Unterstrich ist jetzt erlaubt. RouterOS nimmt "mein_router" als Identity,
+    und derselbe Name steht dann in /etc/hosts oder kommt per mDNS -- ein Kunde mit so einem
+    Router konnte sich nicht verbinden. Strenge DNS-Konformitaet ist hier nicht die Aufgabe:
+    diese Pruefung soll verhindern, dass der Wert in `ssh-keyscan` als Option gelesen wird
+    oder einen Befehl mitbringt. Ein Unterstrich tut beides nicht. Fuehrender Unterstrich
+    bleibt erlaubt (SRV-Namen wie _ssh._tcp), fuehrender Bindestrich bleibt verboten.
+
+    Nicht geaendert, weil gemessen und schon in Ordnung: IPv6 mit Zone-Index. Das Gegenlesen
+    vom 19.10. hatte "fe80::1%eth0" als abgelehnt gemeldet; nachgemessen am 2026-10-20 laeuft
+    der Wert durch, denn ipaddress.ip_address() kennt den Scope-Id seit Python 3.9. Der
+    Testfall dazu steht jetzt in HostPruefungTests, damit es dabei bleibt.
+    """
+    if not wert or len(wert) > 253:
+        raise ValueError("host")
+    try:
+        adresse = ipaddress.ip_address(wert.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        if adresse.is_multicast or adresse.is_unspecified:
+            raise ValueError("host")
+        return wert
+    labels = wert.rstrip(".").split(".")
+    if not all(
+        re.fullmatch(r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?", label)
+        for label in labels
+    ):
+        raise ValueError("host")
+    return wert
+
+
 def _wan_interface() -> str:
     conn = core.current_conn()
     selected = conn.get("wan_interface")
@@ -338,6 +394,14 @@ def _wan_interface() -> str:
         return selected
     configured = core._routeros_value(core.cfg.wan_interface, "wan_interface")
     configured_rows = parse_terse(core.router(f'/interface print terse where name="{configured}"'))
+    # 2026-10-19 bewusst noch nicht umgestellt, weil es dafuer eine Messung am Geraet braucht.
+    # Der blosse Umstand, dass eine Schnittstelle diesen Namen traegt, sagt nicht, dass sie
+    # der Uplink ist -- auf einem Geraet mit laufendem PPPoE-Client ist pppoe-out1 das WAN,
+    # nicht ether1. Eine Umstellung aendert aber, auf welches Interface JEDE NAT- und
+    # Filterregel geht, also die Kernwirkung beim Kunden, und die Test-Fixture kann das heute
+    # nicht bewachen: sie hat gleichzeitig einen gebundenen DHCP-Client und einen laufenden
+    # PPPoE-Client auf ether1. Erst entscheiden, welches Geraet die Fixture darstellt, dann
+    # am hAP oder CHR messen, dann umstellen.
     if configured_rows:
         conn["wan_interface"] = configured
         return configured
@@ -787,7 +851,7 @@ def _port_forwards_create():
     try:
         safe_name = core._routeros_text(body.get("name", ""), "name", maximum=64)
     except ValueError:
-        return jsonify({"error": "bad_request", "message": "'name' fehlt oder ungueltig"}), 400
+        return jsonify({"error": "bad_request", "message": "'name' fehlt oder ungültig"}), 400
     if (
         protocol not in ("tcp", "udp")
         or not _valid_single_port(external_port)
@@ -796,7 +860,7 @@ def _port_forwards_create():
     ):
         return jsonify({
             "error": "bad_request",
-            "message": "'external_port'/'internal_port' muessen 1-65535 sein, 'internal_ip' eine gueltige IPv4-Adresse",
+            "message": "'external_port'/'internal_port' müssen 1-65535 sein, 'internal_ip' eine gültige IPv4-Adresse",
         }), 400
 
     existing = parse_terse(
@@ -838,9 +902,16 @@ def _port_forwards_create():
         # NAT-Regel zurueck (Audit A06: "es gibt keinen Rueckbau/Abgleich").
         core.router(f'/ip firewall nat remove [find where comment="{comment}"]')
         raise
+    # 2026-10-20: Das benutzte WAN-Interface geht mit in die Antwort. Solange
+    # _wan_interface() den konfigurierten Namen ueber die Live-Erkennung stellt (siehe den
+    # Kommentar dort), kann Cockpit auf einem PPPoE-Anschluss "ether1" nehmen, wo
+    # "pppoe-out1" das WAN ist -- die Freigabe greift dann nicht. Vorher sah der Kunde nur
+    # "angelegt" und suchte den Fehler bei seiner Kamera. Jetzt steht der Name in der
+    # Rueckmeldung, und er sieht ihn, ohne in WinBox nachzusehen.
     return jsonify({
         "id": pf_id, "name": safe_name, "protocol": protocol,
         "external_port": external_port, "internal_ip": internal_ip, "internal_port": internal_port,
+        "wan_interface": safe_wan,
     }), 201
 
 
@@ -1112,7 +1183,11 @@ def backup_restore(backup_id: str):
                 "Eine Wiederherstellung ersetzt die komplette Konfiguration dieses Routers und "
                 "startet ihn sofort neu. Zum Fortfahren 'confirm': true im Body mitschicken."
             ),
-        }), 400
+            # 2026-10-20 von 400 auf 409 vereinheitlicht: "confirmation_required" ist kein
+            # fehlerhafter Request -- die Angaben sind gueltig, nur die Ausfuehrung braucht
+            # eine zusaetzliche Zustimmung. 400 gehoert im Vertrag "bad_request". Alle fuenf
+            # Huerden antworten jetzt gleich, siehe dem API-Vertrag.
+        }), 409
     backup_dir = _backup_dir_for_current_router()
     local_path = _resolve_backup_file(backup_dir, backup_id)
     if local_path is None:
@@ -1631,9 +1706,9 @@ def device_reservation(mac: str):
     webui_port = body.get("webui_port")
     webui_scheme = body.get("webui_scheme", "http")
     if not _MAC_RE.match(mac or ""):
-        return jsonify({"error": "bad_request", "message": "'mac' ungueltig"}), 400
+        return jsonify({"error": "bad_request", "message": "'mac' ungültig"}), 400
     if not core._valid_ipv4(ip):
-        return jsonify({"error": "bad_request", "message": "'ip' fehlt oder ungueltig"}), 400
+        return jsonify({"error": "bad_request", "message": "'ip' fehlt oder ungültig"}), 400
     if webui_scheme not in ("http", "https"):
         return jsonify({"error": "bad_request", "message": "'webui_scheme' muss http oder https sein"}), 400
     if has_webui and not _valid_single_port(webui_port):
@@ -1648,7 +1723,7 @@ def device_reservation(mac: str):
     if not lease:
         return jsonify({
             "error": "device_not_found",
-            "message": "Kein bekannter DHCP-Lease fuer diese MAC -- Geraet muss vorher online gewesen sein",
+            "message": "Kein bekannter DHCP-Lease für diese MAC -- Gerät muss vorher online gewesen sein",
         }), 404
     server = core._routeros_value(lease[0].get("server", ""), "server")
     old_address = lease[0].get("address", "")
@@ -1749,7 +1824,7 @@ def network_dns_put():
     ):
         return jsonify({
             "error": "invalid_dns",
-            "message": "1 bis 3 gueltige IPv4-Adressen erwartet",
+            "message": "1 bis 3 gültige IPv4-Adressen erwartet",
         }), 400
     core.router(f'/ip dns set servers="{",".join(servers)}"')
     return jsonify({"ok": True, "dns_servers": servers})
@@ -1761,13 +1836,13 @@ def network_dhcp_client_create():
     try:
         safe_interface = core._routeros_value(body.get("interface", ""), "interface")
     except ValueError:
-        return jsonify({"error": "bad_request", "message": "'interface' fehlt oder ungueltig"}), 400
+        return jsonify({"error": "bad_request", "message": "'interface' fehlt oder ungültig"}), 400
 
     existing = parse_terse(core.router(f'/ip dhcp-client print terse where interface="{safe_interface}"'))
     if existing:
         return jsonify({
             "error": "dhcp_client_exists",
-            "message": "Fuer dieses Interface laeuft bereits ein DHCP-Client",
+            "message": "Für dieses Interface läuft bereits ein DHCP-Client",
         }), 409
     core.router(f'/ip dhcp-client add interface="{safe_interface}" disabled=no')
     return jsonify({"ok": True, "interface": safe_interface}), 201
@@ -1781,10 +1856,10 @@ def network_dhcp_client_delete(interface: str):
     try:
         safe_interface = core._routeros_value(interface, "interface")
     except ValueError:
-        return jsonify({"error": "not_found", "message": "Kein DHCP-Client fuer dieses Interface"}), 404
+        return jsonify({"error": "not_found", "message": "Kein DHCP-Client für dieses Interface"}), 404
     rows = parse_terse(core.router(f'/ip dhcp-client print terse where interface="{safe_interface}"'))
     if not rows:
-        return jsonify({"error": "not_found", "message": "Kein DHCP-Client fuer dieses Interface"}), 404
+        return jsonify({"error": "not_found", "message": "Kein DHCP-Client für dieses Interface"}), 404
     core.router(f'/ip dhcp-client remove [find interface="{safe_interface}"]')
     return jsonify({"ok": True})
 
@@ -1847,14 +1922,14 @@ def _dhcp_ranges_create():
     try:
         safe_interface = core._routeros_value(body.get("interface", ""), "interface")
     except ValueError:
-        return jsonify({"error": "bad_request", "message": "'interface' fehlt oder ungueltig"}), 400
+        return jsonify({"error": "bad_request", "message": "'interface' fehlt oder ungültig"}), 400
     network = body.get("network", "")
     range_start = body.get("range_start", "")
     range_end = body.get("range_end", "")
     if not core._valid_ipv4_cidr(network) or not core._valid_ipv4(range_start) or not core._valid_ipv4(range_end):
         return jsonify({
             "error": "bad_request",
-            "message": "'network' (CIDR), 'range_start' und 'range_end' muessen gueltig sein",
+            "message": "'network' (CIDR), 'range_start' und 'range_end' müssen gültig sein",
         }), 400
 
     # RouterOS akzeptiert einen Pool auch dann, wenn seine Grenzen nicht zum
@@ -1885,7 +1960,7 @@ def _dhcp_ranges_create():
     if existing:
         return jsonify({
             "error": "range_exists",
-            "message": "Fuer dieses Interface existiert bereits ein DHCP-Bereich",
+            "message": "Für dieses Interface existiert bereits ein DHCP-Bereich",
         }), 409
 
     iface_addr = parse_terse(core.router(f'/ip address print terse where interface="{safe_interface}"'))
@@ -1913,7 +1988,7 @@ def _dhcp_ranges_create():
     gateway = body.get("gateway") or own_ip
     dns_servers = body.get("dns_servers") or [own_ip]
     if not core._valid_ipv4(gateway) or not all(core._valid_ipv4(s) for s in dns_servers):
-        return jsonify({"error": "bad_request", "message": "'gateway'/'dns_servers' ungueltig"}), 400
+        return jsonify({"error": "bad_request", "message": "'gateway'/'dns_servers' ungültig"}), 400
     gateway_ip = ipaddress.IPv4Address(gateway)
     if gateway_ip not in dhcp_network or gateway_ip in {
         dhcp_network.network_address, dhcp_network.broadcast_address,

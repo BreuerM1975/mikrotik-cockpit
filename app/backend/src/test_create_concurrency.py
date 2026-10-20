@@ -6,6 +6,7 @@ from unittest.mock import patch
 import app
 import core
 import routes_basis
+from test_app import zaehlende_sperre
 
 
 class CreateConcurrencyTests(unittest.TestCase):
@@ -21,6 +22,7 @@ class CreateConcurrencyTests(unittest.TestCase):
                 release_first = threading.Event()
                 second_started = threading.Event()
                 second_entered = threading.Event()
+                sperrversuche = threading.Semaphore(0)
                 records = []
 
                 def create():
@@ -42,14 +44,26 @@ class CreateConcurrencyTests(unittest.TestCase):
 
                 sessions = {name: {"host": "audit.invalid", "ssh_port": 22}
                             for name in ("concurrency-a", "concurrency-b")}
-                with patch.dict(core.SESSIONS, sessions), patch.object(routes_basis, worker, side_effect=create):
+                with patch.dict(core.SESSIONS, sessions), \
+                        patch.object(routes_basis, worker, side_effect=create), \
+                        patch.object(core, "_router_create_lock",
+                                     side_effect=zaehlende_sperre(sperrversuche)):
                     with ThreadPoolExecutor(max_workers=2) as pool:
                         first = pool.submit(request, "concurrency-a")
                         try:
                             self.assertTrue(first_entered.wait(2))
                             second = pool.submit(request, "concurrency-b", True)
                             self.assertTrue(second_started.wait(2))
-                            self.assertFalse(second_entered.wait(.1))
+                            # 2026-10-20: harte Bedingung statt Wartefenster. Vorher stand
+                            # hier `assertFalse(second_entered.wait(.1))` -- unter Last kommt
+                            # die zweite Anfrage in dieser Zeit nicht bis zur Sperre, und der
+                            # Test war gruen, auch ohne `with`-Statement im Endpunkt. Jetzt
+                            # wird gewartet, bis sie nachweislich dort angekommen ist.
+                            self.assertTrue(
+                                sperrversuche.acquire(timeout=3),
+                                "Die zweite Anfrage ist nie an der Sperre angekommen",
+                            )
+                            self.assertFalse(second_entered.is_set())
                         finally:
                             release_first.set()
                         self.assertEqual(first.result(timeout=3), 201)

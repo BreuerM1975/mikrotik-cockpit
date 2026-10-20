@@ -97,4 +97,20 @@ window.COCKPIT_PATTERNS_EN = [
     "The router already has a group $1 that may do more than view ($2). Cockpit therefore does not use it. Rename it in WinBox or remove those rights."],
   [/^Der andere Benutzer mit vollen Rechten war noch nie angemeldet\. Melde dich erst einmal mit ihm an, damit das Passwort nachweislich stimmt, dann lässt sich (.+) (.+?)\.$/,
     (_match, name, verb) => `The other full-access user has never logged in. Log in with it once first, so the password is proven to work, then ${name} can be ${USER_VERBS_EN_PAST[verb] || verb}.`],
+
+  // --- Validierungsfehler des Backends, nachgetragen am 2026-10-20 -------------------------
+  // Diese Texte gehen als (code, text)-Tupel aus den Routen raus, nicht als {"message": ...}.
+  // test-language-static.py war dafuer blind, bis sein Sammler am 2026-10-20 auf den
+  // Syntaxbaum umgestellt wurde -- erst dadurch sind diese Luecken sichtbar geworden.
+  // Das Woerterbuch gewinnt gegen ein Muster (i18n.js:38), die vorhandenen exakten
+  // Feldmeldungen bleiben also unberuehrt.
+  [/^'(.+)' muss ein gültiger Port oder Portbereich sein \(z\. B\. 443 oder 1024-2048\)$/,
+    "'$1' must be a valid port or port range (e.g. 443 or 1024-2048)"],
+  [/^'(.+)' muss eine gültige IPv4-Adresse oder CIDR sein$/,
+    "'$1' must be a valid IPv4 address or CIDR"],
+  [/^'(.+)' ungültig$/, "'$1' is invalid"],
+  [/^Achtung: Der SSH-Schlüssel dieses Routers hat sich geändert \(jetzt (.+), (.+)\)\. Das kann ein neu aufgesetztes Gerät sein oder ein Man-in-the-Middle-Angriff\. Verbindung aus Sicherheitsgründen abgelehnt -- den alten Eintrag nur nach eigener Prüfung manuell entfernen\.$/,
+    "Warning: this router's SSH key has changed (now $1, $2). That can be a freshly set up device or a man-in-the-middle attack. Connection refused for safety -- remove the old entry by hand only after checking yourself."],
+  [/^Der DHCP-Bereich darf die eigene IP-Adresse des Routers auf diesem Interface \((.+)\) nicht enthalten -- das erzeugt einen Adresskonflikt mit einem per DHCP versorgten Client\.$/,
+    "The DHCP range must not contain the router's own IP address on this interface ($1) -- that creates an address conflict with a DHCP-supplied client."],
 ];

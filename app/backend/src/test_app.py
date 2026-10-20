@@ -212,6 +212,42 @@ FAKE_OUTPUT = {
 }
 
 
+def zaehlende_sperre(semaphore):
+    """Ersatz fuer `core._router_create_lock`, der jeden VERSUCH zaehlt, die Sperre zu nehmen.
+
+    Gedacht fuer die drei Nebenlaeufigkeitstests der Suite. Die standen bis zum 2026-10-20
+    alle auf derselben Wette: zweite Anfrage starten, eine zehntel Sekunde warten, und dann
+    pruefen, dass sie noch nichts getan hat. Auf einer belasteten Maschine kommt sie in dieser
+    Zeit gar nicht bis zur Sperre -- der Test ist dann gruen, auch wenn das `with`-Statement
+    im Endpunkt fehlt. Mit dieser Huelle wartet der Test stattdessen darauf, dass die zweite
+    Anfrage nachweislich an der Sperre ANGEKOMMEN ist, und prueft erst danach. Bleibt das aus,
+    faellt er. Zwischen dem Zaehlen und dem Blockieren kann nichts passieren, weil die
+    geschuetzte Arbeit hinter der Sperre liegt.
+
+    Benutzung::
+
+        versuche = threading.Semaphore(0)
+        with patch.object(core_module, "_router_create_lock",
+                          side_effect=zaehlende_sperre(versuche)):
+            ...
+            self.assertTrue(versuche.acquire(timeout=3), "nie an der Sperre angekommen")
+    """
+    echte_sperre = core_module._router_create_lock
+
+    class _Gezaehlt:
+        def __init__(self, sperre):
+            self._sperre = sperre
+
+        def __enter__(self):
+            semaphore.release()
+            return self._sperre.__enter__()
+
+        def __exit__(self, *args):
+            return self._sperre.__exit__(*args)
+
+    return lambda: _Gezaehlt(echte_sperre())
+
+
 RB_PRINT_IN_SYNC = (
     '       routerboard: yes\n             model: RB952Ui-5ac2nD\n  factory-firmware: 6.49.13\n'
     '  current-firmware: 7.24.1\n  upgrade-firmware: 7.24.1\n'
@@ -301,7 +337,8 @@ class ApiTest(unittest.TestCase):
     @patch("routes_basis.run_command")
     def test_connect_success(self, mock_run_command, _host_key):
         mock_run_command.side_effect = (
-            lambda host, user, password, port, command, known_hosts_path=None: FAKE_OUTPUT.get(command, "")
+            lambda host, user, password, port, command, known_hosts_path=None,
+            eigene_verbindung=False: FAKE_OUTPUT.get(command, "")
         )
         resp = self.client.post(
             "/api/v1/connect",
@@ -312,6 +349,13 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertTrue(data["session"])
         self.assertEqual(data["router_identity"], "L009")
+        # 2026-10-19: Der Pruefbefehl muss sich wirklich anmelden. Lief er ueber einen
+        # bestehenden Kontrollsocket, wurde SSHPASS nie benutzt und ein falsches Passwort
+        # ergab trotzdem 200 (siehe routeros.run_command).
+        self.assertTrue(
+            mock_run_command.call_args_list[0].kwargs.get("eigene_verbindung"),
+            "Die Zugangspruefung beim Verbinden darf keinen bestehenden Socket mitbenutzen",
+        )
         # Die frisch erzeugte Sitzung muss sofort fuer weitere Aufrufe nutzbar sein.
         self.assertIn(data["session"], core_module.SESSIONS)
 
@@ -322,7 +366,8 @@ class ApiTest(unittest.TestCase):
         # ein gueltiges RouterOS-Passwort -- .strip() haette es unbemerkt veraendert und den
         # Nutzer trotz korrekter Eingabe ausgesperrt.
         mock_run_command.side_effect = (
-            lambda host, user, password, port, command, known_hosts_path=None: FAKE_OUTPUT.get(command, "")
+            lambda host, user, password, port, command, known_hosts_path=None,
+            eigene_verbindung=False: FAKE_OUTPUT.get(command, "")
         )
         resp = self.client.post(
             "/api/v1/connect",
@@ -1355,7 +1400,8 @@ class ApiTest(unittest.TestCase):
 
         with patch("routes_basis.upload_file") as mock_upload:
             resp = self.client.post(f"/api/v1/backup/{backup_id}/restore", headers=self.headers)
-        self.assertEqual(resp.status_code, 400)
+        # 2026-10-20 von 400 auf 409 vereinheitlicht, siehe dem API-Vertrag.
+        self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.get_json()["error"], "confirmation_required")
         mock_upload.assert_not_called()
         mock_router.assert_not_called()
@@ -2445,6 +2491,11 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(len(add_calls), 2)
         for call in add_calls:
             self.assertIn('in-interface="ether1"', call)
+        # 2026-10-20: Das benutzte Interface muss auch in der Antwort stehen. Solange
+        # _wan_interface() den konfigurierten Namen ueber die Live-Erkennung stellt, kann es
+        # auf einem PPPoE-Anschluss der falsche sein -- dann sucht der Kunde den Fehler sonst
+        # bei seinem Geraet statt am Anschluss.
+        self.assertEqual(resp.get_json()["wan_interface"], "ether1")
 
     @patch("core.router")
     def test_port_forwards_create_rolls_back_nat_rule_if_filter_add_fails(self, mock_router):
