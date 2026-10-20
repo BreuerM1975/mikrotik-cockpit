@@ -179,7 +179,7 @@ else:
 
 
 if __name__ == "__main__":
-    # Nur lokal erreichbar -- das Verbinden-Modell (siehe dem Verbinden-Modell)
+    # Nur lokal erreichbar -- das Verbinden-Modell (siehe das Verbinden-Modell)
     # braucht keinen Zugriff aus dem Heimnetz mehr, Cockpit läuft wie WinBox auf dem Rechner
     # des Kunden selbst. Einzige Ausnahme: im Container (Dockerfile) muss der Prozess auf allen
     # Adressen lauschen, sonst kommt der Port nicht aus dem Container heraus; dort setzt das

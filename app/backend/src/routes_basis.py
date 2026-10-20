@@ -23,7 +23,7 @@ GitHub-Sponsors + Pro-Features":
 | /firewall/* (forward/input/nat) | Pro | Explizit genannt |
 | /services | Pro | Explizit genannt ("IP-Services-Verwaltung") |
 
-Grenzfaelle (siehe den Projektnotizen, Ergebnis des RouterOS-Reviews vom 10.09.2026):
+Grenzfaelle (siehe die Projektnotizen, Ergebnis des RouterOS-Reviews vom 10.09.2026):
 Die Gastnetz-Isolationspruefung fuer `/security-check` (Basis) und `_fw_ordered_ids()` fuer
 `/port-forwards` (Basis) haengen an Helfern, die inhaltlich zu den Pro-Themen Gastnetz/
 Firewall gehoeren -- diese Helfer liegen deshalb in `core.py`, nicht hier.
@@ -537,7 +537,7 @@ def wifi_password(interface: str):
         # Neuerer wifiwave2/wifi-Treiber (hAP ax2, wAP ax) -- Konfiguration liegt inline am
         # Interface, analog zu "configuration.ssid" bei wifi_ssid(). NICHT live gegen echte
         # wifi-Treiber-Hardware verifiziert (im Testlabor nur der klassische wireless-Treiber
-        # vorhanden, siehe den Projektnotizen) -- vor Kundeneinsatz auf hAP ax2/wAP ax nachpruefen. Gilt
+        # vorhanden, siehe die Projektnotizen) -- vor Kundeneinsatz auf hAP ax2/wAP ax nachpruefen. Gilt
         # genauso fuer den Undo-Lesezugriff unten (_wifi_capture_old_secret_wifi()).
         old_secret = _wifi_capture_old_secret_wifi(safe_interface)
         core.router(
@@ -564,7 +564,7 @@ def wifi_password(interface: str):
 
 
 def _wifi_capture_old_secret_wireless(profile_name: str) -> dict | None:
-    # Grundsatzfrage vor diesem Feature (siehe den Projektnotizen): zeigt RouterOS den gesetzten
+    # Grundsatzfrage vor diesem Feature (siehe die Projektnotizen): zeigt RouterOS den gesetzten
     # wpa2-pre-shared-key/wpa-pre-shared-key im Klartext? Live gegen den Test-hAP verifiziert
     # (10.09.2026, RouterOS 7.23.1): NEIN in "print terse"/"print detail"/"export" -- RouterOS
     # blendet beide Felder dort grundsaetzlich aus, auch nicht maskiert, einfach nicht
@@ -591,7 +591,7 @@ def _wifi_capture_old_secret_wireless(profile_name: str) -> dict | None:
 
 def _wifi_capture_old_secret_wifi(safe_interface: str) -> dict | None:
     # NICHT live gegen echte wifi-Treiber-Hardware verifiziert (Testlabor hat nur den
-    # klassischen wireless-Treiber, siehe den Projektnotizen) -- rein defensiv gebaut: schlaegt das
+    # klassischen wireless-Treiber, siehe die Projektnotizen) -- rein defensiv gebaut: schlaegt das
     # Auslesen aus irgendeinem Grund fehl (z.B. abweichender Property-Name auf einer anderen
     # RouterOS-Version), bleibt "undo_available: false", der eigentliche Passwortwechsel oben
     # laeuft trotzdem unveraendert durch.
@@ -629,7 +629,7 @@ def wifi_password_undo(interface: str):
         }), 404
 
     # Sofort verbrauchen, bevor der Routerbefehl laeuft: ein Undo wirkt nur einmal, auch wenn
-    # der folgende Routerbefehl fehlschlaegt (siehe dem API-Vertrag) -- sonst waere unklar, ob
+    # der folgende Routerbefehl fehlschlaegt (siehe den API-Vertrag) -- sonst waere unklar, ob
     # ein zweiter Versuch denselben, ggf. inzwischen ungueltigen Altwert nochmal versuchen darf.
     del undo_store[safe_interface]
 
@@ -888,7 +888,7 @@ def _port_forwards_create():
         # forward-Regel setzen, nicht ans Ende anhaengen -- sonst wirkt eine bereits
         # greifende "drop all"-Regel vor der neuen Freigabe-Regel und macht sie wirkungslos.
         # core._fw_ordered_ids() liegt in core.py, weil sowohl diese Basis-Route als auch die
-        # Pro-Firewall-Erstellung sie brauchen (siehe Moduldocstring/den Projektnotizen).
+        # Pro-Firewall-Erstellung sie brauchen (siehe Moduldocstring/Projektnotizen).
         filter_path = "/ip firewall filter"
         before_ids = core._fw_ordered_ids(filter_path, "forward")
         place_before = f" place-before={before_ids[-1]}" if before_ids else ""
@@ -1186,7 +1186,7 @@ def backup_restore(backup_id: str):
             # 2026-10-20 von 400 auf 409 vereinheitlicht: "confirmation_required" ist kein
             # fehlerhafter Request -- die Angaben sind gueltig, nur die Ausfuehrung braucht
             # eine zusaetzliche Zustimmung. 400 gehoert im Vertrag "bad_request". Alle fuenf
-            # Huerden antworten jetzt gleich, siehe dem API-Vertrag.
+            # Huerden antworten jetzt gleich, siehe den API-Vertrag.
         }), 409
     backup_dir = _backup_dir_for_current_router()
     local_path = _resolve_backup_file(backup_dir, backup_id)

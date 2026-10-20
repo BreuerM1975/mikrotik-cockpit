@@ -110,7 +110,7 @@ class DiensteAussperrungTests(_MitSitzung):
     Der Endpunkt PUT /api/v1/services/<name>/enabled prueft heute nur Namensgueltigkeit,
     Wahrheitswert und Existenz (routes_pro.py:1289). Der einzige Schutz gegen das
     Abschalten des eigenen Zugangswegs steht im Frontend (pro.js, `confirmAction`) --
-    und genau diese Bedingung war am 08.09. schon einmal invertiert (den Projektnotizen).
+    und genau diese Bedingung war am 08.09. schon einmal invertiert (Projektnotizen).
     """
 
     @patch("core.router")

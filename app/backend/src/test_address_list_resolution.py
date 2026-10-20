@@ -8,7 +8,7 @@ from unittest.mock import patch
 # entdeckt wird (unittest discover), wuerde core.cfg sonst mit dem echten ~/.config-Pfad
 # initialisiert werden, bevor test_app.py seinen eigenen setdefault() nachholen kann -- Python
 # cached das core-Modul beim zweiten Import, der Pfad bliebe fuer den ganzen Testlauf falsch
-# (siehe den Projektnotizen, 2026-09-10, Fund waehrend der Basis/Pro-Code-Trennung).
+# (siehe die Projektnotizen, 2026-09-10, Fund waehrend der Basis/Pro-Code-Trennung).
 os.environ.setdefault("COCKPIT_BACKUP_DIR", tempfile.mkdtemp(prefix="cockpit-test-backups-"))
 os.environ.setdefault("COCKPIT_DEVICE_ROOMS_DIR", tempfile.mkdtemp(prefix="cockpit-test-device-rooms-"))
 

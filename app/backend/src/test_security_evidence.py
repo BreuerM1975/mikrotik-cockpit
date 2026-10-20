@@ -65,7 +65,7 @@ class ServiceEvidenceTests(unittest.TestCase):
 
 
 # Audit "vollstaendige Firewall-/Gastnetz-Abnahme", 10.09.2026: die drei am 09.09. dokumentierten
-# Luecken (Listenmitgliedschaft, Bridge-Paketpfad, IPv6) -- siehe den Projektnotizen fuer den vollen Kontext.
+# Luecken (Listenmitgliedschaft, Bridge-Paketpfad, IPv6) -- siehe die Projektnotizen fuer den vollen Kontext.
 class InterfaceListResolutionTests(unittest.TestCase):
     def test_out_interface_list_covering_lan_counts_as_lan(self):
         # Ein selbst benannter "Hausnetz"-Listenname statt "LAN" wurde bisher IMMER als

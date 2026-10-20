@@ -3,7 +3,7 @@ import os
 
 class Config:
     def __init__(self) -> None:
-        # Kein fest konfigurierter Router mehr -- siehe dem Verbinden-Modell.
+        # Kein fest konfigurierter Router mehr -- siehe das Verbinden-Modell.
         # Verbindungsdaten (Host/User/Passwort/Port) kommen jetzt zur Laufzeit ueber
         # POST /api/v1/connect und leben nur in app.SESSIONS, nicht in der Konfiguration.
         self.wan_interface = os.environ.get("COCKPIT_WAN_INTERFACE", "ether1")

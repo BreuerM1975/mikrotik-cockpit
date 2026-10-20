@@ -40,7 +40,7 @@ from routeros import (
 
 cfg = load_config()
 
-# Verbinden-Modell wie WinBox (siehe dem Verbinden-Modell): keine fest
+# Verbinden-Modell wie WinBox (siehe das Verbinden-Modell): keine fest
 # konfigurierte Route mehr, sondern eine aktive Verbindung pro Sitzung. Lebt nur im
 # Arbeitsspeicher dieses Prozesses -- ein Neustart des Diensts beendet jede Sitzung,
 # genau wie das Schliessen von WinBox eine Verbindung beendet.

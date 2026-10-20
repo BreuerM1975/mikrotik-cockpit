@@ -285,7 +285,7 @@ class ApiTest(unittest.TestCase):
     def setUp(self):
         app_module.app.testing = True
         self.client = app_module.app.test_client()
-        # Verbinden-Modell (siehe dem Verbinden-Modell): keine feste
+        # Verbinden-Modell (siehe das Verbinden-Modell): keine feste
         # Konfiguration mehr, sondern eine Sitzung, die "/connect" normalerweise anlegt.
         # Für Tests, die nicht selbst den Connect-Ablauf prüfen, wird sie direkt gesetzt.
         self.session_id = "test-session"
@@ -432,7 +432,7 @@ class ApiTest(unittest.TestCase):
         # fetch(url, {method:"POST", headers:{"Content-Type":"text/plain"}, body:"..."}) --
         # eine CORS-"simple request" ganz ohne Preflight -- den lokalen Cockpit-Prozess blind
         # zu einer SSH-Verbindung mit fremden Zugangsdaten zwingen. Live gegen den lokal
-        # laufenden Prozess nachgewiesen (siehe den Projektnotizen); dieser Test haelt den Fix nach.
+        # laufenden Prozess nachgewiesen (siehe die Projektnotizen); dieser Test haelt den Fix nach.
         with patch("routes_basis.run_command") as run_command:
             resp = self.client.post(
                 "/api/v1/connect",
@@ -1400,7 +1400,7 @@ class ApiTest(unittest.TestCase):
 
         with patch("routes_basis.upload_file") as mock_upload:
             resp = self.client.post(f"/api/v1/backup/{backup_id}/restore", headers=self.headers)
-        # 2026-10-20 von 400 auf 409 vereinheitlicht, siehe dem API-Vertrag.
+        # 2026-10-20 von 400 auf 409 vereinheitlicht, siehe den API-Vertrag.
         self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.get_json()["error"], "confirmation_required")
         mock_upload.assert_not_called()
@@ -2383,7 +2383,7 @@ class ApiTest(unittest.TestCase):
     @patch("core.router")
     def test_wifi_password_undo_wifi_driver(self, mock_router):
         # Neuerer wifiwave2/wifi-Treiber: Passphrase liegt inline am Interface. NICHT live
-        # gegen echte Hardware verifiziert (siehe den Projektnotizen), hier nur Mock-Abdeckung fuer die
+        # gegen echte Hardware verifiziert (siehe die Projektnotizen), hier nur Mock-Abdeckung fuer die
         # Undo-Logik selbst.
         mock_router.side_effect = [
             "",  # Treibererkennung: klassischer "wireless" nicht gefunden
