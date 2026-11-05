@@ -334,6 +334,33 @@ def close_connection(host: str, user: str, port: int) -> bool:
         return False
 
 
+def _maskiere_nicht_ascii(command: str) -> str:
+    """Schreibt Zeichen ausserhalb von ASCII in Anfuehrungszeichen als \\XX-Bytes.
+
+    Am CHR auf 7.24.5 gemessen (2026-11-05): RouterOS verwirft solche Bytes im Befehl ueber SSH ohne
+    Fehlermeldung. Aus comment="Kae" mit Umlaut wird "K", ein Passwort verliert sein Umlaut, und die
+    Anmeldung mit dem eingetippten Passwort scheitert. where name="..." findet das Interface nicht.
+    Mit \\C3\\A4 stimmt alles. Ausserhalb von Anfuehrungszeichen meldet RouterOS dafuer einen Fehler.
+    """
+    aus = []
+    in_string = False
+    i = 0
+    while i < len(command):
+        zeichen = command[i]
+        if in_string and zeichen == "\\" and i + 1 < len(command):
+            aus.append(command[i:i + 2])
+            i += 2
+            continue
+        if zeichen == '"':
+            in_string = not in_string
+        if in_string and ord(zeichen) > 127:
+            aus.extend(f"\\{byte:02X}" for byte in zeichen.encode("utf-8", "surrogateescape"))
+        else:
+            aus.append(zeichen)
+        i += 1
+    return "".join(aus)
+
+
 def run_command(
     host: str, user: str, password: str, port: int, command: str,
     timeout: int = 10, known_hosts_path: str | None = None,
@@ -371,7 +398,7 @@ def run_command(
         *control_opts,
         "-o", f"ConnectTimeout={timeout}",
         f"{user}@{host}",
-        command,
+        _maskiere_nicht_ascii(command),
     ]
     env = {**os.environ, "SSHPASS": password}
     try:

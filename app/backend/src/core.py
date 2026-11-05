@@ -524,15 +524,21 @@ def _resolve_interface_list_members(list_name: str, nur_aktive: bool = False) ->
     return members
 
 
-def _interface_list_covers_lan(list_name: str) -> bool | None:
+def _interface_list_covers_lan(list_name: str, ausser: frozenset[str] | set[str] = frozenset()) -> bool | None:
     """Vergleicht eine beliebige Interface-Liste mit der Liste "LAN" über ihre tatsächlichen
     Mitglieder statt über den Listennamen.
 
     True: deckt alle LAN-Mitglieder ab (verhält sich für eine Drop-Regel wie "LAN" selbst).
     False: nachweislich disjunkt zu LAN (die Regel betrifft das Hausnetz nachweislich nicht).
     None: teilweise Überschneidung oder nicht auflösbar -- bleibt ehrlich unklar.
+
+    ausser: Was fuer diesen Vergleich nicht zum Hausnetz zaehlt, etwa das Gastnetz selbst oder
+    Bridge-Ports, die im Routing nicht vorkommen (siehe _gast_ausnahmen()).
     """
     lan_members = _resolve_interface_list_members("LAN")
+    if not lan_members:
+        return None
+    lan_members = lan_members - ausser
     if not lan_members:
         return None
     members = _resolve_interface_list_members(list_name, nur_aktive=True)
@@ -582,12 +588,15 @@ def _static_address_list_networks(list_name: str) -> set[ipaddress.IPv4Network |
     return networks
 
 
-def _address_list_covers_interface(list_name: str, interface: str) -> bool | None:
+def _address_list_covers_interface(list_name: str, interface: str, ausser: frozenset[str] | set[str] = frozenset()) -> bool | None:
     """Vergleicht eine statische Adressliste mit allen IPv4/IPv6-Netzen eines Interfaces.
 
     True bedeutet: Jede Adresse des Interfaces liegt nachweislich in mindestens einem einzelnen
     Listeneintrag. False bedeutet: Die Liste ist vollständig disjunkt. Teilüberdeckungen und
     mehrere Einträge, die ein Netz nur gemeinsam abdecken könnten, bleiben absichtlich unknown.
+
+    interface="LAN": Mitglieder aus "ausser" zaehlen nicht, und ein Mitglied ohne Adresse ist kein
+    geroutetes Netz. Bridge-Ports und VLAN-Bruecken ohne IP sind dort der Normalfall.
     """
     listed = _static_address_list_networks(list_name)
     if listed is None:
@@ -596,14 +605,14 @@ def _address_list_covers_interface(list_name: str, interface: str) -> bool | Non
     interfaces = _resolve_interface_list_members("LAN") if interface == "LAN" else {interface}
     if not interfaces:
         return None
-    for name in interfaces:
+    for name in interfaces - ausser:
         try:
             safe_interface = _routeros_value(name, "interface")
             output = router(f'/ip address print terse where interface="{safe_interface}"')
         except (ValueError, RouterCommandFailed, RouterUnreachable):
             return None
         rows = parse_terse(output)
-        if (output.strip() and not rows) or not rows:
+        if output.strip() and not rows:
             return None
         for row in rows:
             value = row.get("address")
@@ -613,6 +622,8 @@ def _address_list_covers_interface(list_name: str, interface: str) -> bool | Non
                 interface_networks.add(ipaddress.ip_interface(value).network)
             except ValueError:
                 return None
+    if not interface_networks:
+        return None
     if all(any(network.subnet_of(candidate) for candidate in listed if network.version == candidate.version)
            for network in interface_networks):
         return True
@@ -662,6 +673,14 @@ def _guest_bridge_bypass(safe_interface: str) -> bool | None:
         return None
     same_bridge_is_lan = bridge_name in lan_members
     if not same_bridge_is_lan:
+        # Ohne VLAN-Filter erreicht ein Gast, der selbst taggt, jedes VLAN-Interface dieser Bridge.
+        # Im Labor gemessen, siehe Szenario bridge-ohne-vlanfilter.
+        try:
+            vlan_rows = _terse_ohne_abgeschaltete(router(f'/interface vlan print terse where interface="{bridge_name}"'))
+        except (RouterCommandFailed, RouterUnreachable):
+            return None
+        same_bridge_is_lan = any(row.get("name") in lan_members for row in vlan_rows) and not _bridge_vlan_filter(bridge_name)
+    if not same_bridge_is_lan:
         # Die Bridge selbst ist kein LAN-Mitglied -- prüfen, ob ein ANDERER Port derselben
         # Bridge individuell in der LAN-Liste steht (falls die Liste einzelne Ports statt der
         # Bridge selbst enthält).
@@ -678,7 +697,35 @@ def _guest_bridge_bypass(safe_interface: str) -> bool | None:
         return None
     if not settings:
         return None
-    return settings.get("use-ip-firewall", "no").strip().lower() != "yes"
+    bypass = settings.get("use-ip-firewall", "no").strip().lower() != "yes"
+    if not bypass and _port_im_switch_chip(safe_interface) is not False:
+        return None
+    return bypass
+
+
+def _port_im_switch_chip(safe_interface: str) -> bool | None:
+    """Flag H: Verkehr zwischen Switch-Ports erreicht die CPU nicht, Bridge-Filter und use-ip-firewall
+    sehen ihn dann nicht (manual.mikrotik.com, Bridging and Switching). Das Feld hw=yes sagt nur, dass
+    Offload erlaubt ist: Es steht auch am CHR und am hAP ax2, die kein Flag H zeigen, der L009 zeigt es."""
+    try:
+        ausgabe = router(f'/interface bridge port print terse where interface="{safe_interface}"')
+    except (RouterCommandFailed, RouterUnreachable):
+        return None
+    return any("H" in flags and "X" not in flags for flags in map(terse_flags, ausgabe.splitlines()))
+
+
+def _bridge_zeile(bridge_name: str) -> dict | None:
+    """Die Zeile der Bridge aus "/interface bridge". None: nicht lesbar oder nicht vorhanden."""
+    try:
+        rows = parse_terse(router(f'/interface bridge print terse where name="{bridge_name}"'))
+    except (RouterCommandFailed, RouterUnreachable):
+        return None
+    return rows[0] if rows else None
+
+
+def _bridge_vlan_filter(bridge_name: str) -> bool:
+    zeile = _bridge_zeile(bridge_name)
+    return bool(zeile) and zeile.get("vlan-filtering", "").lower() in ("yes", "true")
 
 
 def _bridge_siblings(bridge_name: str, exclude: str) -> set[str] | None:
@@ -829,6 +876,32 @@ def _bridge_filter_isolation(safe_interface: str, bridge_name: str) -> bool | No
     return None
 
 
+def _vlan_id_in(feld: str, vlan_id: str) -> bool:
+    """Steht die VLAN-ID in "10,20-30"? Unlesbares zaehlt als ja, das haelt das Urteil vorsichtig."""
+    for teil in (t.strip() for t in feld.split(",")):
+        if not teil:
+            continue
+        try:
+            von, _, bis = teil.partition("-")
+            if int(von) <= int(vlan_id) <= int(bis or von):
+                return True
+        except ValueError:
+            return True
+    return False
+
+
+def _funknetz(interface: str) -> tuple[bool, str | None]:
+    """(ist WLAN, SSID) eines Interfaces. Die SSID fehlt, wenn sie aus einem Profil kommt."""
+    for pfad, feld in (("wifi", "configuration.ssid"), ("wireless", "ssid")):
+        try:
+            rows = parse_terse(router(f'/interface {pfad} print terse where name="{interface}"'))
+        except (RouterCommandFailed, RouterUnreachable):
+            continue
+        if rows:
+            return True, rows[0].get(feld) or None
+    return False, None
+
+
 def _vlan_isolation(safe_interface: str, bridge_name: str) -> bool | None:
     """Prüft, ob VLAN-Filterung auf der Bridge das Gastnetz Layer-2-getrennt hält --
     (manual.mikrotik.com/docs/bridging-and-switching/user-guides/bridge-vlan-table, Abruf
@@ -844,21 +917,17 @@ def _vlan_isolation(safe_interface: str, bridge_name: str) -> bool | None:
     "current-untagged" (tatsächlich angewandter Zustand inkl. automatisch durch PVID erzeugter
     Einträge) statt der rohen "tagged"/"untagged"-Konfiguration.
 
-    True: die VLAN-ID des Gastnetz-Ports hat nachweislich KEINEN Hausnetz-Port als Mitglied.
-    False: mindestens ein Hausnetz-Port teilt sich nachweislich dieselbe VLAN-ID.
-    None: VLAN-Filterung nicht aktiv, kein Tabelleneintrag für die Gastnetz-VLAN-ID gefunden
-    (absichtlich konservativ -- kein Rückschluss auf RouterOS' Default-Drop-Verhalten ohne
-    Tabelleneintrag), oder etwas davon nicht lesbar/auflösbar -- inkl. dem Regelfall am Test-hAP
-    (10.09.2026: vlan-filtering=no, keine VLAN-Tabelleneinträge)."""
-    try:
-        bridge_rows = parse_terse(router(f'/interface bridge print terse where name="{bridge_name}"'))
-    except (RouterCommandFailed, RouterUnreachable):
-        return None
-    if not bridge_rows:
-        return None
-    if bridge_rows[0].get("vlan-filtering", "no").strip().lower() != "yes":
-        return None
+    True: Das VLAN des Gastnetz-Ports ist auf Layer 2 vom Hausnetz getrennt.
+    False: Ein Hausnetz-Port haengt ungetaggt im selben VLAN, die Bridge selbst gehoert zum
+    selben VLAN und zum Hausnetz, oder der Gast kann sich am Port selbst in ein anderes VLAN taggen.
+    None: VLAN-Filterung nicht aktiv, kein Tabelleneintrag oder etwas nicht lesbar.
 
+    2026-11-05, am hAP ax2 gelesen und im Labor gemessen: Getrennt wird per VLAN-ID, nicht per Port.
+    Ein Trunk fuehrt Gast- und Hausnetz-VLAN getaggt und ist kein Leck. Das sagt nur etwas ueber
+    Layer 2. Ob der Router zwischen den VLANs routet, prueft _guest_isolation()."""
+    zeile = _bridge_zeile(bridge_name)
+    if not zeile or zeile.get("vlan-filtering", "").lower() not in ("yes", "true"):
+        return None
     try:
         port_rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
     except (RouterCommandFailed, RouterUnreachable):
@@ -866,36 +935,324 @@ def _vlan_isolation(safe_interface: str, bridge_name: str) -> bool | None:
     if not port_rows:
         return None
     pvid = port_rows[0].get("pvid", "1")
+    # Am CHR gemessen (Szenario vlan-ohne-ingress): Ohne Ingress-Filter gelangt ein selbst getaggtes
+    # Paket vom Gast-Port in jedes VLAN. Nur "admit-only-untagged" haelt es dann noch auf.
+    ingress = port_rows[0].get("ingress-filtering", "").lower()
+    frames = port_rows[0].get("frame-types", "")
+    if ingress in ("no", "false") and not frames.startswith("admit-only-untagged"):
+        return False
+    if ingress not in ("yes", "true", "no", "false"):
+        return None
+    # Setzt das WLAN sein VLAN selbst, sagt die PVID des Ports nichts ueber das VLAN des Gastes.
+    if _wlan_setzt_vlan(safe_interface) is not False:
+        return None
 
-    lan_ports = _bridge_lan_ports(bridge_name, safe_interface)
-    if lan_ports is None:
+    lan_members = _resolve_interface_list_members("LAN")
+    siblings = _bridge_siblings(bridge_name, safe_interface)
+    if not lan_members or not siblings:
+        # Kein anderer Bridge-Port oder leeres LAN: kein belastbarer Vergleich (z.B. ein Ein-Port-Testaufbau).
         return None
 
     try:
-        aktive_vlans = _terse_ohne_abgeschaltete(router(f'/interface bridge vlan print terse where bridge="{bridge_name}"'))
+        vlan_rows = _terse_ohne_abgeschaltete(router(f'/interface bridge vlan print terse where bridge="{bridge_name}"'))
     except (RouterCommandFailed, RouterUnreachable):
         return None
-    matching = [row for row in aktive_vlans
-                if pvid in {v.strip() for v in row.get("vlan-ids", "").split(",") if v.strip()}]
+    matching = [row for row in vlan_rows if _vlan_id_in(row.get("vlan-ids", ""), pvid)]
+    # Der Ingress-Filter prueft nur die Mitgliedschaft. Steht der Gast-Port auch in einem fremden VLAN,
+    # kommt er mit selbst getaggten Paketen dorthin (im Labor gemessen, Szenario gast-tagged-haus-vlan).
+    if not frames.startswith("admit-only-untagged"):
+        for row in vlan_rows:
+            # Auch eine Sammelzeile "vlan-ids=10,20" fuehrt in fremde VLANs. Dort zeigt current-* aber
+            # auch Ports, die nur ueber ihre PVID dabei sind, deshalb zaehlt nur die Konfiguration.
+            if row in matching and row.get("vlan-ids", "").strip() == pvid:
+                continue
+            felder = ("tagged", "untagged") if row in matching else ("current-tagged", "current-untagged", "tagged", "untagged")
+            for key in felder:
+                if safe_interface in {v.strip() for v in row.get(key, "").split(",")}:
+                    return False
     if not matching:
         # Kein Tabelleneintrag fuer diese VLAN-ID -- RouterOS' Default-Verhalten (Egress-Drop
         # ohne Eintrag) koennte tatsaechlich isolieren, ist hier aber bewusst nicht als Nachweis
         # gewertet, siehe Docstring.
         return None
 
-    members: set[str] = set()
+    ungetaggt: set[str] = set()
     for row in matching:
-        for key in ("current-tagged", "current-untagged", "tagged", "untagged"):
-            members |= {v.strip() for v in row.get(key, "").split(",") if v.strip()}
-    members.discard(safe_interface)
+        statisch = {v.strip() for v in row.get("untagged", "").split(",") if v.strip()}
+        aktuell = {v.strip() for v in row.get("current-untagged", "").split(",") if v.strip()}
+        if row.get("vlan-ids", "").strip() != pvid:
+            pvids = _port_pvids(bridge_name)
+            if pvids is None:
+                return None
+            # Fest untagged in der Sammelzeile: Gastverkehr verlaesst auch einen Port mit fremder PVID.
+            if any(pvids.get(port, pvid) != pvid for port in statisch - {safe_interface}):
+                return False
+            aktuell = {port for port in aktuell if pvids.get(port, pvid) == pvid}
+        ungetaggt |= statisch | aktuell
+    ungetaggt.discard(safe_interface)
 
-    if not lan_ports:
-        # Kein anderer Bridge-Port zaehlt als Hausnetz (z.B. ein Ein-Port-Testaufbau) --
-        # kein belastbarer Nachweis, konservativ unklar.
+    bridge_ist_lan = bridge_name in lan_members
+    if bridge_ist_lan and pvid == zeile.get("pvid", "1"):
+        return False
+    # Ein zweites Funkband desselben Gastnetzes ist kein Hausnetz.
+    _, gast_ssid = _funknetz(safe_interface)
+    unklar = False
+    for port in ungetaggt:
+        ist_wlan, ssid = _funknetz(port)
+        if ist_wlan and gast_ssid and ssid == gast_ssid:
+            continue
+        if port in lan_members and not ist_wlan:
+            return False
+        # Ob ein anderes WLAN oder ein Port ausserhalb der Liste zum Hausnetz gehoert, steht nirgends.
+        if port in lan_members or bridge_ist_lan or _vlan_interface_in_lan(bridge_name, pvid, lan_members):
+            unklar = True
+    return None if unklar else True
+
+
+def _port_pvids(bridge_name: str) -> dict[str, str] | None:
+    try:
+        rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where bridge="{bridge_name}"'))
+    except (RouterCommandFailed, RouterUnreachable):
         return None
-    if members & lan_ports:
+    return {row["interface"]: row["pvid"] for row in rows if row.get("interface") and row.get("pvid")}
+
+
+def _vlan_interface_in_lan(bridge_name: str, vlan_id: str, lan_members: set[str]) -> bool:
+    try:
+        rows = _terse_ohne_abgeschaltete(router(f'/interface vlan print terse where interface="{bridge_name}"'))
+    except (RouterCommandFailed, RouterUnreachable):
+        return True
+    return any(row.get("vlan-id") == vlan_id and row.get("name") in lan_members for row in rows)
+
+
+def _gast_vlan_mitglieder(safe_interface: str, bridge_name: str, pvid: str) -> set[str] | None:
+    """Alle anderen Ports im VLAN des Gastes, ohne die Bridge selbst. None: nicht lesbar."""
+    try:
+        rows = _terse_ohne_abgeschaltete(router(f'/interface bridge vlan print terse where bridge="{bridge_name}"'))
+    except (RouterCommandFailed, RouterUnreachable):
+        return None
+    mitglieder: set[str] = set()
+    for row in rows:
+        if _vlan_id_in(row.get("vlan-ids", ""), pvid):
+            for key in ("current-tagged", "current-untagged", "tagged", "untagged"):
+                mitglieder |= {v.strip() for v in row.get(key, "").split(",") if v.strip()}
+    return mitglieder - {safe_interface, bridge_name}
+
+
+def _befehl_fehlt(exc: RouterCommandFailed) -> bool:
+    """Das Menue gibt es hier nicht. Jeder andere Fehler heisst: Es liess sich nicht lesen."""
+    text = str(exc).lower()
+    return "bad command name" in text or "no such command" in text
+
+
+def _wlan_setzt_vlan(safe_interface: str) -> bool | None:
+    """True, wenn das WLAN-Interface selbst ein VLAN setzt. Dann sagt die PVID des Ports nichts.
+
+    Am CHR nicht messbar, er hat kein WLAN. Am hAP ax2 gelesen: Ein Gast-WLAN ueber die PVID zeigt
+    weder "datapath=" noch "datapath.vlan-id=" noch "configuration=". Ein benanntes Profil kann ein VLAN
+    mitbringen, das diese Abfrage nicht sieht, deshalb zaehlt schon das Profil. Dazu kommen VLANs je
+    Geraet (Access-List) und je Passwort (Multi-Passphrase).
+    """
+    for pfad in ("/interface wifi access-list", "/interface wifi security multi-passphrase", "/interface wireless access-list"):
+        try:
+            rows = _terse_ohne_abgeschaltete(router(f"{pfad} print terse"))
+        except RouterCommandFailed as exc:
+            if _befehl_fehlt(exc):
+                continue
+            return None
+        except RouterUnreachable:
+            return None
+        if any(row.get("vlan-id") not in (None, "", "none") for row in rows):
+            return True
+    for pfad, felder in (("wifi", ("datapath", "datapath.vlan-id", "configuration")), ("wireless", ("vlan-id",))):
+        try:
+            rows = parse_terse(router(f'/interface {pfad} print terse where name="{safe_interface}"'))
+        except RouterCommandFailed as exc:
+            if _befehl_fehlt(exc):
+                continue
+            return None
+        except RouterUnreachable:
+            return None
+        for row in rows:
+            if pfad == "wireless" and row.get("vlan-mode", "no-tag") != "no-tag":
+                return True
+            if pfad == "wifi" and any(row.get(feld) not in (None, "", "none") for feld in felder):
+                return True
+    return False
+
+
+def _hat_routbare_adresse(interface: str, filter_path: str) -> bool | None:
+    """Traegt das Interface eine Adresse, mit der der Router hier routet? Link-Local zaehlt nicht."""
+    pfad = "/ipv6 address" if filter_path.startswith("/ipv6") else "/ip address"
+    try:
+        rows = _terse_ohne_abgeschaltete(router(f'{pfad} print terse where interface="{interface}"'))
+    except RouterCommandFailed as exc:
+        # Nur das fehlende IPv6-Paket heisst "keine Adresse". Jeder andere Fehler bleibt unklar.
+        fehlt = pfad == "/ipv6 address" and ("bad command name" in str(exc).lower() or "no such command" in str(exc).lower())
+        return False if fehlt else None
+    except RouterUnreachable:
+        return None
+    return any(row.get("address") and not row["address"].lower().startswith("fe80") for row in rows)
+
+
+_PRIVATE_NETZE = tuple(ipaddress.ip_network(netz) for netz in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
+
+
+def _adress_zeilen(filter_path: str) -> list[dict] | None:
+    pfad = "/ipv6 address" if filter_path.startswith("/ipv6") else "/ip address"
+    try:
+        ausgabe = router(f"{pfad} print terse")
+    except (RouterCommandFailed, RouterUnreachable):
+        return None
+    if ausgabe.strip() and not parse_terse(ausgabe):
+        return None
+    return [row for row in _terse_ohne_abgeschaltete(ausgabe)
+            if row.get("interface") and row.get("address")
+            and not row["address"].lower().startswith("fe80") and row["interface"] != "lo"]
+
+
+def _privat_adressiert(filter_path: str) -> set[str]:
+    """Interfaces mit privater Adresse. Eine unlesbare Adresse zaehlt dazu, das ist die vorsichtige Seite."""
+    namen = set()
+    for row in _adress_zeilen(filter_path) or []:
+        try:
+            ip = ipaddress.ip_interface(row["address"]).ip
+        except ValueError:
+            namen.add(row["interface"])
+            continue
+        if any(ip in netz for netz in _PRIVATE_NETZE):
+            namen.add(row["interface"])
+    return namen
+
+
+def _geroutete_ziele(filter_path: str, eingang: set[str]) -> set[str] | None:
+    """Wohin der Router das Gastnetz routen kann: jedes Interface mit Adresse ausser Eingang und WAN.
+
+    Die Liste "LAN" allein reicht nicht. Steht das Haus-VLAN nicht darin, trifft eine Sperre auf "LAN"
+    es nie (im Labor gemessen, Szenario lan-nur-bridge). Ein WAN mit privater Adresse bleibt ein Ziel:
+    Der Router haengt dann hinter einem anderen Router, etwa einer FritzBox, und Geraete dort sind ueber
+    den Internetausgang erreichbar (Szenario hinter-router-sperre-lan). None: nicht lesbar.
+    """
+    zeilen = _adress_zeilen(filter_path)
+    if zeilen is None:
+        return None
+    wan = _resolve_interface_list_members("WAN") or set()
+    return {row["interface"] for row in zeilen} - eingang - (wan - _privat_adressiert(filter_path))
+
+
+def _zustand_unzuverlaessig(filter_path: str) -> bool:
+    """Connection-State-Regeln gelten nur, wenn der Router Verbindungen auch verfolgt.
+
+    Im Labor gemessen: notrack in der Raw-Kette macht aus Gastverkehr "untracked", die uebliche Freigabe
+    "established,related,untracked" laesst dann alles durch. Ohne Tracking greift "new" nie.
+    """
+    raw = "/ipv6 firewall raw" if filter_path.startswith("/ipv6") else "/ip firewall raw"
+    try:
+        if parse_colon(router("/ip firewall connection tracking print")).get("enabled", "").strip().lower() == "no":
+            return True
+        return any(row.get("action") == "notrack" for row in _terse_ohne_abgeschaltete(router(f"{raw} print terse")))
+    except (RouterCommandFailed, RouterUnreachable):
+        return True
+
+
+def _keine_ipsec_policy() -> bool:
+    """True, wenn nur die Vorlage existiert: Dann trifft eine Regel mit ipsec-policy keinen Gastverkehr."""
+    try:
+        rows = _terse_ohne_abgeschaltete(router("/ip ipsec policy print terse"))
+    except (RouterCommandFailed, RouterUnreachable):
+        return False
+    return all(row.get("template") == "yes" for row in rows)
+
+
+def _absender_schliesst_gast_aus(row: dict, eingang: set[str], filter_path: str) -> bool:
+    """Eine Freigabe nur fuer fremde Absender trifft den Gast nur, wenn er seine Adresse faelschen kann.
+
+    Im Labor gemessen, Szenarien spoof-*: Ohne rp-filter kommt das gefaelschte Paket am Haus-Client an, mit
+    strict nicht. Loose prueft nur, ob es irgendeine Route zum Absender gibt, das zaehlt hier nicht. Am L009
+    steht strict. Das gibt es nur fuer IPv4.
+    """
+    if filter_path != "/ip firewall filter":
+        return False
+    wert = row.get("src-address", "")
+    try:
+        if parse_colon(router("/ip settings print")).get("rp-filter", "").strip().lower() != "strict":
+            return False
+        absender = ipaddress.ip_network(wert, strict=False)
+        for name in eingang:
+            zeilen = _terse_ohne_abgeschaltete(router(f'/ip address print terse where interface="{name}"'))
+            if not zeilen:
+                return False
+            for zeile in zeilen:
+                if ipaddress.ip_interface(zeile["address"]).network.overlaps(absender):
+                    return False
+    except (RouterCommandFailed, RouterUnreachable, ValueError, KeyError):
         return False
     return True
+
+
+def _gast_eingang(safe_interface: str, filter_path: str = "/ip firewall filter", auch_ohne_adresse: bool = False) -> set[str] | None:
+    """Ueber welches Interface kommt Gastverkehr im Router an? Danach richtet sich die Firewall.
+
+    Am CHR gemessen (2026-11-05): Geroutet trifft Verkehr von einem Bridge-Port nie in-interface=<Port>.
+    - Kein Bridge-Port: das Gast-Interface selbst.
+    - Bridge ohne VLAN-Filter: die Bridge.
+    - Bridge mit VLAN-Filter: das VLAN-Interface zur PVID des Ports, die Bridge nur bei gleicher PVID.
+
+    Leere Menge: Auf diesem Geraet gibt es keinen Router fuer das Gastnetz. None: nicht bestimmbar,
+    auch wenn das WLAN selbst ein VLAN setzt.
+    auch_ohne_adresse: Fuer IPv6 braucht der Router keine Adresse im Gastnetz, der Gast kann ueber die
+    Link-Local-Adresse routen (im Labor gemessen, Szenario fe80-gateway).
+    """
+    try:
+        bridge_name = _bridge_port_of(safe_interface)
+        if not bridge_name:
+            return {safe_interface}
+        port_rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
+    except (RouterCommandFailed, RouterUnreachable):
+        return None
+    zeile = _bridge_zeile(bridge_name)
+    if not zeile or not port_rows:
+        return None
+    if zeile.get("vlan-filtering", "").lower() in ("yes", "true"):
+        if _wlan_setzt_vlan(safe_interface) is not False:
+            return None
+        pvid = port_rows[0].get("pvid", "1")
+        try:
+            vlan_rows = _terse_ohne_abgeschaltete(router(f'/interface vlan print terse where interface="{bridge_name}"'))
+        except (RouterCommandFailed, RouterUnreachable):
+            return None
+        kandidaten = {row["name"] for row in vlan_rows if row.get("vlan-id") == pvid and row.get("name")}
+        if pvid == zeile.get("pvid", "1"):
+            kandidaten.add(bridge_name)
+    else:
+        kandidaten = {bridge_name}
+    if auch_ohne_adresse:
+        return kandidaten
+    eingang = set()
+    for name in kandidaten:
+        hat_adresse = _hat_routbare_adresse(name, filter_path)
+        if hat_adresse is None:
+            return None
+        if hat_adresse:
+            eingang.add(name)
+    return eingang
+
+
+def _gast_ausnahmen(eingang: set[str], eigener_eingang: bool) -> set[str] | None:
+    """Was in der Liste "LAN" im Routing nicht das Hausnetz ist.
+
+    Das Gastnetz selbst steht oft in "LAN", am hAP ax2 und am L009 etwa. Bridge-Ports trifft eine
+    Regel auf out-interface-list im Routing nie (im Labor gemessen, Szenario lan-nur-ports). Teilen
+    sich Gast und Haus eine Bridge, ist deren Eingang zugleich das Hausnetz und bleibt deshalb drin.
+    """
+    try:
+        ports = parse_terse(router("/interface bridge port print terse"))
+    except (RouterCommandFailed, RouterUnreachable):
+        return None
+    ausnahmen = {row["interface"] for row in ports if row.get("interface")}
+    if eigener_eingang:
+        ausnahmen |= eingang
+    return ausnahmen
 
 
 def _ipv6_relevant() -> bool | None:
@@ -1018,7 +1375,12 @@ def device_mode_state() -> dict:
     }
 
 
-def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filter") -> bool | None:
+def _guest_isolation(
+    safe_interface: str,
+    filter_path: str = "/ip firewall filter",
+    eigener_eingang: bool = True,
+    eingang: set[str] | None = None,
+) -> bool | None:
     """Bestätigt Isolation nur über eine aktive, konkrete Forward-Drop-Regel.
 
     Ein Gastnetz-Interface allein beweist keine Trennung. Wir akzeptieren deshalb
@@ -1049,34 +1411,56 @@ def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filte
     output = router(f'{filter_path} print terse where chain=forward')
     if not parse_terse(output):
         return None
-    # Am CHR gemessen (2026-11-05): Gerouteter Verkehr von einem Bridge-Port trifft in-interface=
-    # <Bridge>, nicht in-interface=<Port>. Eine Regel auf den Port zaehlt 0 Pakete. Geroutet kommt das
-    # Gastnetz dann ueber die Bridge oder ein VLAN-Interface darauf herein, und das wertet diese
-    # Funktion nicht aus. Sie kann also nichts belegen.
-    try:
-        if _bridge_port_of(safe_interface):
-            return None
-    except (RouterCommandFailed, RouterUnreachable):
+    # Die Regeln muessen den Eingang im Router treffen, nicht zwingend das Gast-Interface, siehe
+    # _gast_eingang(). Leer heisst: Hier wird das Gastnetz nicht geroutet, siehe _gast_befund().
+    if eingang is None:
+        eingang = _gast_eingang(safe_interface, filter_path)
+    if not eingang:
         return None
+    ausser = _gast_ausnahmen(eingang, eigener_eingang)
+    if ausser is None:
+        return None
+    ziele = _geroutete_ziele(filter_path, eingang)
+    if ziele is None:
+        return None
+    privat = _privat_adressiert(filter_path)
+    zustand_unzuverlaessig = _zustand_unzuverlaessig(filter_path)
+    invalid_gesperrt = False
     for row in _terse_ohne_abgeschaltete(output):
+        # Eine Sperre, die wir nicht ganz verstehen, oeffnet trotzdem nichts: Sie ist kein Beleg, aber auch
+        # kein Grund aufzugeben. Bei einer Freigabe bleibt es unklar. Sonst waere jede Standardfirewall unklar.
+        sperrt = row.get("action") in ("drop", "reject")
+        # Nur bestehende Verbindungen eroeffnen nichts, auch bei negiertem Eingang. Am L009 steht so die
+        # FastTrack-Regel aus dem CAKE-Umbau: in-interface=!pppoe-out1.
+        if not zustand_unzuverlaessig and set(row.get("connection-state", "-").split(",")) <= {"established", "related", "untracked"}:
+            continue
         in_if_list = row.get("in-interface-list")
         if in_if_list:
             if in_if_list.startswith("!"):
+                if sperrt:
+                    continue
                 return None
             members = _resolve_interface_list_members(in_if_list, nur_aktive=True)
             if members is None:
+                if sperrt:
+                    continue
                 return None
-            if safe_interface not in members:
+            if not members & eingang:
                 continue
             # Gastnetz ist Mitglied dieser Liste -- Regel gilt fuer das Gastnetz, genau wie ein
             # direktes "in-interface=<Gastnetz>".
         else:
             in_if = row.get("in-interface")
             if in_if and in_if.startswith("!"):
-                if in_if[1:] == safe_interface:
+                if in_if[1:] in eingang or sperrt:
                     continue
                 return None
-            if in_if and in_if != safe_interface:
+            if in_if and in_if.startswith("all-"):
+                # all-vlan, all-ethernet und Co. enthalten den Eingang vermutlich, das steht aber in keiner Liste.
+                if sperrt:
+                    continue
+                return None
+            if in_if and in_if not in eingang:
                 continue
         # Regeln, die ausschliesslich schon bestehende Verbindungen betreffen (z.B. die
         # RouterOS-Standardregel "accept established,related,untracked"), koennen keine
@@ -1084,62 +1468,109 @@ def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filte
         # "new"-Verbindung gibt es nichts, das "established" werden koennte. Sie zaehlen
         # deshalb nicht als Bruch der Isolation.
         conn_state = row.get("connection-state", "")
-        if "!" in conn_state:
+        if "!" in conn_state or (conn_state and zustand_unzuverlaessig):
+            if sperrt:
+                continue
             return None
         if conn_state and "new" not in conn_state.split(","):
+            if sperrt and "invalid" in conn_state.split(",") and not _has_unresolved_matchers(row, {"in-interface", "in-interface-list", "connection-state"}):
+                invalid_gesperrt = True
+            continue
+        if row.get("action") == "accept" and row.get("src-address") and _absender_schliesst_gast_aus(row, eingang, filter_path):
             continue
         source_list = row.get("src-address-list")
         destination_list = row.get("dst-address-list")
         # IPv6-Adresslisten sind eigene Listen, auch bei gleichem Namen. Gelesen werden unten aber
         # nur die IPv4-Listen und -Adressen. Damit laesst sich fuer IPv6 nichts belegen.
         if (source_list or destination_list) and filter_path != "/ip firewall filter":
+            if sperrt:
+                continue
             return None
         if source_list:
-            source_covers_guest = _address_list_covers_interface(source_list, safe_interface)
+            source_covers_guest = all(_address_list_covers_interface(source_list, name) is True for name in eingang)
             # Eine eingeschränkte Accept-Regel könnte einzelnen Gastadressen Zugang geben;
             # eine eingeschränkte Drop-Regel kann nicht die gesamte Gastgruppe schützen. In
             # beiden Fällen lässt sich ohne vollständige Adressraum-Simulation nichts Ehrliches
             # behaupten. Dynamische und Teil-Listen fallen ebenfalls hier hinein.
-            if source_covers_guest is not True:
+            if not source_covers_guest:
+                if sperrt:
+                    continue
                 return None
         if destination_list:
-            destination_covers_lan = _address_list_covers_interface(destination_list, "LAN")
-            if destination_covers_lan is not True:
+            destination_covers_lan = _address_list_covers_interface(destination_list, "LAN", ausser)
+            if destination_covers_lan is not True or not all(_address_list_covers_interface(destination_list, ziel) is True for ziel in ziele):
+                if sperrt:
+                    continue
                 return None
         out_if_list = row.get("out-interface-list")
         out_if = row.get("out-interface")
         if row.get("action") in ("jump", "return"):
             return None
+        # Eine Sperre "alles ausser WAN" trifft auch das Hausnetz, wenn WAN nachweislich nicht dazugehoert.
+        # Sie wirkt dann wie eine Regel ohne Ziel. Am L009 steht sie als out-interface=!pppoe-out1.
+        negiertes_ziel = set()
         if out_if_list and out_if_list.startswith("!"):
             # Am CHR gemessen: "member print where list=!WAN" ist leer. Die Liste galte sonst als
             # disjunkt zum Hausnetz, und eine Freigabe "out-interface-list=!WAN" fiele durch.
-            return None
+            ausgenommen = _resolve_interface_list_members(out_if_list[1:])
+            if not sperrt or (ausgenommen or set()) & ziele or _interface_list_covers_lan(out_if_list[1:], ausser) is not False:
+                return None
+            out_if_list = None
+        if out_if and out_if.startswith("!") and sperrt:
+            lan_alle = _resolve_interface_list_members("LAN")
+            if lan_alle and lan_alle - ausser and out_if[1:] not in lan_alle and out_if[1:] not in ziele:
+                out_if = None
+                negiertes_ziel = {"out-interface"}
         list_targets_lan = out_if_list == "LAN"
         list_unresolved = bool(out_if_list) and out_if_list != "LAN"
         if list_unresolved:
-            covers = _interface_list_covers_lan(out_if_list)
+            covers = _interface_list_covers_lan(out_if_list, ausser)
             list_targets_lan = covers is True
             list_unresolved = covers is None
         elif list_targets_lan:
             lan_alle = _resolve_interface_list_members("LAN")
             lan_aktiv = _resolve_interface_list_members("LAN", nur_aktive=True)
-            if lan_aktiv is None or not (lan_alle or set()) - {safe_interface}:
-                # Unlesbar, leer oder nur das Gastnetz selbst: Die Regel belegt nichts ueber das Hausnetz.
+            if lan_aktiv is None or not (lan_alle or set()) - ausser:
+                # Unlesbar, leer oder nur Gastnetz und Bridge-Ports: Die Regel belegt nichts ueber das Hausnetz.
                 list_targets_lan = False
                 list_unresolved = True
             elif row.get("action") == "accept":
                 # Trifft die Freigabe mindestens ein aktives Mitglied, ist das Leck belegt. Ohne
                 # aktives Mitglied trifft sie nichts.
-                list_targets_lan = bool(lan_aktiv - {safe_interface})
-            elif (lan_alle - lan_aktiv) - {safe_interface}:
+                list_targets_lan = bool(lan_aktiv - ausser)
+            elif (lan_alle - lan_aktiv) - ausser:
                 # Die Sperre deckt "LAN" nur teilweise ab: Das abgeschaltete Mitglied bleibt Hausnetz,
                 # wird von ihr aber nicht erfasst. Das Gastnetz selbst zaehlt dabei nicht.
                 list_targets_lan = False
                 list_unresolved = True
-        if row.get("action") == "accept" and (out_if or list_unresolved):
-            # Ob das einzelne Ziel bzw. eine nicht aufloesbare Liste LAN-Mitglieder enthält,
-            # ist ohne Topologie-/Listenauflösung nicht nachgewiesen.
+        if row.get("action") == "accept" and out_if:
+            # Am L009 und im Labor: "accept in=Gast out=WAN" ist die uebliche Internet-Freigabe.
+            # Ein Leck ins Hausnetz ist nur belegt bei LAN oder einem privaten Netz ausserhalb von WAN. Ein
+            # oeffentliches Ziel ausserhalb der Liste WAN ist vermutlich der Internetzugang. Hinter einem
+            # privaten WAN kann eine Sperre per Adresse davor stehen, das liest diese Pruefung nicht.
+            lan_alle = _resolve_interface_list_members("LAN") or set()
+            wan = _resolve_interface_list_members("WAN") or set()
+            if out_if in (lan_alle - ausser) or (out_if in ziele & privat and out_if not in wan):
+                if _has_unresolved_matchers(row, {"in-interface", "in-interface-list", "out-interface", "connection-state"}):
+                    return None
+                return False
+            if out_if in wan and out_if not in ziele:
+                continue
             return None
+        if row.get("action") == "accept" and list_unresolved:
+            # Ob eine nicht aufloesbare Liste LAN-Mitglieder enthält, ist nicht nachgewiesen.
+            return None
+        rule_list_members = None
+        if out_if_list:
+            rule_list_members = _resolve_interface_list_members(out_if_list, nur_aktive=True)
+            # Eine Freigabe auf eine Liste ausserhalb von LAN erreicht trotzdem jedes geroutete Mitglied.
+            # Belegt ist das Leck nur bei einem privaten Netz ausserhalb von WAN, wie bei out-interface oben.
+            if row.get("action") == "accept" and rule_list_members and not list_targets_lan:
+                getroffen = rule_list_members & ziele
+                if getroffen & privat - (_resolve_interface_list_members("WAN") or set()):
+                    list_targets_lan = True
+                elif getroffen:
+                    return None
         targets_lan = list_targets_lan or out_if == "LAN"
         targets_anything = not out_if_list and not out_if
         if not (targets_lan or targets_anything):
@@ -1149,22 +1580,147 @@ def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filte
             # Eine Accept-Regel ohne Interface-Einschraenkung, aber mit z.B.
             # ipsec-policy=in,ipsec, darf nicht als pauschale Freigabe gelten. Der frühere
             # targets_anything-Zweig übersah solche Matcher und meldete fälschlich ein Leck.
-            if _has_unresolved_matchers(row, {
+            unterstuetzt = {
                 "in-interface", "in-interface-list", "out-interface", "out-interface-list",
                 "connection-state", "src-address-list", "dst-address-list",
-            }):
+            }
+            if row.get("ipsec-policy") and not _has_unresolved_matchers(row, unterstuetzt | {"ipsec-policy"}) and _keine_ipsec_policy():
+                continue
+            if _has_unresolved_matchers(row, unterstuetzt):
                 return None
             return False
-        if action != "drop":
+        if not sperrt:
             continue
         # Nur eine Drop-Regel OHNE Protokoll-/Port-Einschraenkung deckt wirklich jeden
         # Verkehr zwischen Gastnetz und Hausnetz ab. Eine Regel, die z.B. nur
         # "protocol=tcp dst-port=80" sperrt, laesst jeden anderen Port/jedes andere
         # Protokoll offen -- das ist keine vollstaendige Isolation.
-        if _has_unresolved_matchers(row, {"in-interface", "in-interface-list", "out-interface-list", "connection-state", "src-address-list", "dst-address-list"}):
+        if _has_unresolved_matchers(row, {"in-interface", "in-interface-list", "out-interface-list", "connection-state", "src-address-list", "dst-address-list"} | negiertes_ziel):
+            continue
+        # Die Sperre muss auch jedes andere geroutete Netz treffen, nicht nur die Liste "LAN".
+        if out_if_list and (rule_list_members is None or ziele - rule_list_members):
+            continue
+        # Ohne Sperre fuer invalid kommen einzelne Pakete an einer Regel fuer "new" vorbei.
+        if conn_state and not invalid_gesperrt and "invalid" not in conn_state.split(","):
             continue
         return True
     return None
+
+
+def _gast_layer2(safe_interface: str) -> dict:
+    """Layer-2-Urteil. "getrennt": True, False oder None, dazu wie es belegt ist.
+
+    "eigener_eingang" sagt, ob der Eingang im Router dem Gastnetz allein gehoert. Bei einem
+    Bridge-Filter auf einer gemeinsamen Bridge ist er zugleich das Hausnetz.
+    """
+    try:
+        bridge_name = _bridge_port_of(safe_interface)
+    except (RouterCommandFailed, RouterUnreachable):
+        return {"getrennt": None, "bridge": None, "eigener_eingang": True, "beleg": "unlesbar"}
+    if not bridge_name:
+        # Am hAP ax2 gemessen: Ein Name mit dem Rohbyte 0xB2 steht in terse als "axB2", eine Abfrage damit
+        # findet nichts. Ohne diese Probe hiesse das "kein Bridge-Port", also getrennt.
+        try:
+            vorhanden = parse_terse(router(f'/interface print terse where name="{safe_interface}"'))
+        except (RouterCommandFailed, RouterUnreachable):
+            return {"getrennt": None, "bridge": None, "eigener_eingang": True, "beleg": "unlesbar"}
+        if not vorhanden:
+            return {"getrennt": None, "bridge": None, "eigener_eingang": True, "beleg": "name_unbekannt"}
+        return {"getrennt": True, "bridge": None, "eigener_eingang": True, "beleg": "keine_bridge"}
+    if _bridge_vlan_filter(bridge_name):
+        vlan = _vlan_isolation(safe_interface, bridge_name)
+        if vlan is True:
+            return {"getrennt": True, "bridge": bridge_name, "eigener_eingang": True, "beleg": "vlan"}
+        if _port_im_switch_chip(safe_interface) is False and _bridge_filter_isolation(safe_interface, bridge_name) is True:
+            return {"getrennt": True, "bridge": bridge_name, "eigener_eingang": False, "beleg": "filter"}
+        return {"getrennt": vlan, "bridge": bridge_name, "eigener_eingang": True, "beleg": "vlan_geteilt" if vlan is False else "vlan_unklar"}
+    bypass = _guest_bridge_bypass(safe_interface)
+    if bypass is False:
+        return {"getrennt": True, "bridge": bridge_name, "eigener_eingang": True, "beleg": "eigene_bridge"}
+    if bypass is None:
+        return {"getrennt": None, "bridge": bridge_name, "eigener_eingang": True, "beleg": "unlesbar"}
+    if _port_im_switch_chip(safe_interface) is False and _bridge_filter_isolation(safe_interface, bridge_name) is True:
+        return {"getrennt": True, "bridge": bridge_name, "eigener_eingang": False, "beleg": "filter"}
+    return {"getrennt": False, "bridge": bridge_name, "eigener_eingang": False, "beleg": "bypass"}
+
+
+def _gast_hat_weiteren_weg(safe_interface: str, bridge_name: str) -> bool:
+    """Fuehrt ein anderer Port aus dem Gast-VLAN oder der Gast-Bridge hinaus? Im Zweifel ja."""
+    try:
+        port_rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
+    except (RouterCommandFailed, RouterUnreachable):
+        return True
+    if not port_rows:
+        return True
+    if _bridge_vlan_filter(bridge_name):
+        mitglieder = _gast_vlan_mitglieder(safe_interface, bridge_name, port_rows[0].get("pvid", "1"))
+    else:
+        mitglieder = _bridge_siblings(bridge_name, safe_interface)
+    return mitglieder is None or bool(mitglieder)
+
+
+def _gast_layer3(safe_interface: str, schicht2: dict, filter_path: str) -> bool | str | None:
+    """Layer-3-Urteil fuer eine Adressfamilie: True, False, None, "extern" oder "insel".
+
+    "extern": Hier routet nichts, aber das Gast-VLAN verlaesst das Geraet. Der Router steht woanders.
+    "insel": Hier routet nichts, und es gibt keinen Weg hinaus.
+    """
+    # L3-Hardware-Offload routet im Chip an der Firewall vorbei (manual.mikrotik.com, L3 Hardware
+    # Offloading). Am hAP ax2 steht das Feld nicht, am CHR nicht messbar.
+    try:
+        if any(row.get("l3-hw-offloading", "").lower() in ("yes", "true")
+               for row in _terse_ohne_abgeschaltete(router("/interface ethernet switch print terse"))):
+            return None
+    except RouterUnreachable:
+        return None
+    except RouterCommandFailed as exc:
+        if not _befehl_fehlt(exc):
+            return None
+    eingang = _gast_eingang(safe_interface, filter_path)
+    if eingang is None:
+        return None
+    ist_ipv6 = filter_path.startswith("/ipv6")
+    if ist_ipv6:
+        kandidaten = eingang or _gast_eingang(safe_interface, filter_path, auch_ohne_adresse=True)
+        if kandidaten is None:
+            return None
+        if kandidaten:
+            ziele = _geroutete_ziele(filter_path, kandidaten)
+            if ziele is None:
+                return None
+            if not ziele:
+                return "keine_adresse"
+            return _guest_isolation(safe_interface, filter_path=filter_path, eigener_eingang=schicht2["eigener_eingang"], eingang=kandidaten)
+    if not eingang:
+        if not schicht2["bridge"] or _gast_hat_weiteren_weg(safe_interface, schicht2["bridge"]):
+            return "extern"
+        return "insel"
+    return _guest_isolation(safe_interface, filter_path=filter_path, eigener_eingang=schicht2["eigener_eingang"])
+
+
+def _gast_befund(safe_interface: str) -> dict:
+    """Das eine Urteil fuer Sicherheitscheck und Pro-Karte, Layer 2 und Layer 3 zusammen.
+
+    "good" gilt nur, wenn Gast und Hausnetz auf beiden Wegen getrennt sind. Eine VLAN-Trennung allein
+    reicht nicht: Der Router kann zwischen den VLANs routen, am CHR mit echten Clients gemessen.
+    """
+    schicht2 = _gast_layer2(safe_interface)
+    v4 = _gast_layer3(safe_interface, schicht2, "/ip firewall filter")
+    ipv6_an = _ipv6_relevant()
+    if ipv6_an:
+        v6 = _gast_layer3(safe_interface, schicht2, "/ipv6 firewall filter")
+    else:
+        v6 = True if ipv6_an is False else None
+
+    teile = [schicht2["getrennt"], v4, v6]
+    if False in teile:
+        status = "warn"
+    elif all(teil is True or teil in ("insel", "keine_adresse") for teil in teile):
+        status = "good"
+    else:
+        status = "unknown"
+    hinter_router = bool((_resolve_interface_list_members("WAN") or set()) & _privat_adressiert("/ip firewall filter"))
+    return {"status": status, "schicht2": schicht2, "v4": v4, "v6": v6, "ipv6_an": ipv6_an, "hinter_router": hinter_router}
 
 
 def _guest_row(interface: str) -> tuple[str, dict] | None:
@@ -1182,5 +1738,5 @@ def _guest_row(interface: str) -> tuple[str, dict] | None:
     return path, {
         "enabled": not row["disabled"],
         "ssid": row.get(ssid_field),
-        "isolated": _guest_isolation(safe_interface),
+        "isolated": {"good": True, "warn": False}.get(_gast_befund(safe_interface)["status"]),
     }

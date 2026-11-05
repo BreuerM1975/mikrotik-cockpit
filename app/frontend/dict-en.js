@@ -912,6 +912,16 @@ window.COCKPIT_DICT_EN = {
     "IPv4: earlier accept rules or jump chains require a full firewall review. IPv6: earlier accept rules or jump chains require a full firewall review.",
   "IPv4: keine eindeutige Regel gefunden. IPv6: aktiv, aber keine eindeutige Regel gefunden.":
     "IPv4: no clear rule found. IPv6: active, but no clear rule found.",
+  "Auf diesem Gerät ist das Gastnetz vom Hausnetz getrennt. Geroutet wird aber auf einem anderen Gerät, etwa deinem Router. Prüfe dort, ob das Gastnetz ins Hausnetz darf.":
+    "On this device the guest network is separated from the home network. Routing happens on another device, such as your router. Check there whether the guest network can reach the home network.",
+  "Das Gastnetz ist vom Hausnetz getrennt - Geräte im Gastnetz kommen nicht zu Geräten im Hausnetz. Ob sie die Verwaltung des Routers erreichen, prüft diese Kontrolle nicht.":
+    "The guest network is separated from the home network. Guest devices cannot reach devices on the home network. This check does not cover whether they can reach the router's admin interface.",
+  "Geräte im Gastnetz können aktuell ins Hausnetz gelangen. Lege eine Firewall-Regel an, die Verkehr vom Gastnetz-Interface ins Hausnetz blockt (Forward-Kette, Aktion 'drop').":
+    "Guest devices can currently reach the home network. Add a firewall rule that blocks traffic from the guest interface to the home network (forward chain, action 'drop').",
+  "Der Router blockt unbekannte Zugriffsversuche von außen - kein Handlungsbedarf.":
+    "The router blocks unknown access attempts from outside. Nothing to do.",
+  "Der Router hat aktuell keine wirksame Sperre gegen unbekannte Zugriffsversuche von außen. Lege in der Firewall eine Regel an, die neue Verbindungen in der Input-Kette blockt, sofern sie nicht ausdrücklich erlaubt sein sollen.":
+    "The router has no effective block against unknown access attempts from outside. Add a firewall rule that blocks new connections in the input chain unless they are meant to be allowed.",
   "Internetverbindung prüfen": "Check the internet connection",
   "Netzwerkname (SSID)": "Network name (SSID)",
   "Wird aktualisiert …": "Refreshing …",

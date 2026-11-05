@@ -79,6 +79,48 @@ def backend_texts():
     return found
 
 
+def _baustein_literale(wert):
+    if isinstance(wert, ast.Subscript):
+        return _baustein_literale(wert.value)
+    if isinstance(wert, ast.Dict):
+        return [text for teil in wert.values for text in _baustein_literale(teil)]
+    text = (_literal(wert) or "").strip()
+    return [text] if text else []
+
+
+def bausteine():
+    """Weg 3, seit 2026-11-05: Texte, die erst zusammengesetzt beim Nutzer landen.
+
+    Der Gastnetz-Check baut sein "detail" aus Saetzen mit " ".join(detail_parts). Jede Kombination
+    ist ein anderer Gesamttext, ein Woerterbuchtreffer greift deshalb nicht. Jeder Satz muss als
+    Teilersetzung stehen. Die anderen beiden Wege sahen diese Saetze gar nicht.
+    Rueckgabe: (Saetze, die zusammengesetzt werden; Texte, die einzeln ausgegeben werden).
+    """
+    teile, einzeln = set(), set()
+    for name in ("routes_basis.py", "routes_pro.py", "core.py"):
+        path = BACKEND / name
+        if not path.exists():
+            continue
+        for knoten in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(knoten, ast.Call) and isinstance(knoten.func, ast.Attribute) and knoten.func.attr == "append" \
+                    and isinstance(knoten.func.value, ast.Name) and knoten.func.value.id == "detail_parts" and knoten.args:
+                teile.update(_baustein_literale(knoten.args[0]))
+            if isinstance(knoten, ast.Assign) and len(knoten.targets) == 1 and isinstance(knoten.targets[0], ast.Name):
+                if knoten.targets[0].id == "texte":
+                    teile.update(_baustein_literale(knoten.value))
+                elif knoten.targets[0].id == "plain":
+                    einzeln.update(_baustein_literale(knoten.value))
+            # return False, "Ein Satz." -- der Aufrufer setzt ihn hinter "IPv4: " in detail_parts.
+            if isinstance(knoten, ast.Return) and isinstance(knoten.value, ast.Tuple) and len(knoten.value.elts) == 2:
+                ergebnis, satz = knoten.value.elts
+                if isinstance(ergebnis, ast.Constant) and (ergebnis.value is None or isinstance(ergebnis.value, bool)):
+                    text = (_literal(satz) or "").strip()
+                    if " " in text:
+                        teile.add(text)
+    # Ein f-String wie "IPv6: {detail}" ist kein Satz, seine Saetze stehen oben einzeln in der Menge.
+    return {t for t in teile if "{X}" not in t}, einzeln
+
+
 def load_language_files():
     """dict-en.js, patterns-en.js und substitutions-en.js ueber node auslesen."""
     script = f"""
@@ -116,8 +158,14 @@ def covered(text, data):
 
 def main():
     data = load_language_files()
-    texts = backend_texts()
-    missing = sorted(t for t in texts if not covered(t, data))
+    teile, einzeln = bausteine()
+    gesamt = backend_texts()
+    texts = gesamt | teile | einzeln
+    missing = sorted(
+        {t for t in gesamt - teile - einzeln if not covered(t, data)}
+        | {t for t in einzeln - teile if t not in data["dict"] and t not in data["subs"]}
+        | {t for t in teile if t not in data["subs"]}
+    )
     print(f"Backend-Texte geprüft: {len(texts)} · abgedeckt: {len(texts) - len(missing)}")
     if missing:
         print(f"\n{len(missing)} Text(e) ohne Übersetzung:\n")

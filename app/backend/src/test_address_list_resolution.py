@@ -389,7 +389,7 @@ class AbgeschalteteEintraegeTests(unittest.TestCase):
     def test_vlan_zeile_mit_kommentar_disabled_bleibt_aktiv(self):
         antworten = {
             '/interface bridge print terse where name="b"': "0 name=b vlan-filtering=yes\n",
-            '/interface bridge port print terse where interface="guest"': "0 interface=guest bridge=b pvid=20\n",
+            '/interface bridge port print terse where interface="guest"': "0 interface=guest bridge=b pvid=20 ingress-filtering=yes frame-types=admit-all\n",
             '/interface list member print terse where list="LAN"': "0 list=LAN interface=b\n",
             '/interface bridge port print terse where bridge="b"':
                 "0 bridge=b interface=guest\n1 bridge=b interface=ether2\n",
@@ -398,12 +398,12 @@ class AbgeschalteteEintraegeTests(unittest.TestCase):
                 "1 bridge=b vlan-ids=20 current-untagged=guest\n",
         }
         with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
-            self.assertIs(core._vlan_isolation("guest", "b"), False)
+            self.assertIsNone(core._vlan_isolation("guest", "b"))
 
     def test_abgeschaltete_vlan_zeile_zaehlt_nicht(self):
         antworten = {
             '/interface bridge print terse where name="b"': "0 name=b vlan-filtering=yes\n",
-            '/interface bridge port print terse where interface="guest"': "0 interface=guest bridge=b pvid=20\n",
+            '/interface bridge port print terse where interface="guest"': "0 interface=guest bridge=b pvid=20 ingress-filtering=yes frame-types=admit-all\n",
             '/interface list member print terse where list="LAN"': "0 list=LAN interface=b\n",
             '/interface bridge port print terse where bridge="b"':
                 "0 bridge=b interface=guest\n1 bridge=b interface=ether2\n",
@@ -448,7 +448,7 @@ class AbgeschalteteEintraegeTests(unittest.TestCase):
         antworten = {
             '/interface bridge print terse where name="b"': "0 name=b vlan-filtering=yes\n",
             '/interface bridge port print terse where interface="guest"':
-                "0 X interface=guest bridge=b pvid=20\n1 interface=guest bridge=b pvid=1\n",
+                "0 X interface=guest bridge=b pvid=20 ingress-filtering=yes frame-types=admit-all\n1 interface=guest bridge=b pvid=1 ingress-filtering=yes frame-types=admit-all\n",
             '/interface list member print terse where list="LAN"': "0 list=LAN interface=b\n",
             '/interface bridge port print terse where bridge="b"':
                 "0 bridge=b interface=guest\n1 bridge=b interface=ether2\n",

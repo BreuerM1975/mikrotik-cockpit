@@ -1938,8 +1938,9 @@ class ApiTest(unittest.TestCase):
 
     def test_security_check_guest_isolation_good_when_bridge_filter_closes_the_bypass(self):
         # Nachtrag "Bridge-Filter/VLAN-Isolation", 10.09.2026: derselbe Bridge-Bypass wie oben,
-        # aber eine aktive Bridge-Firewall-Filter-Regel schliesst die Luecke tatsaechlich --
-        # das muss jetzt "good" statt pauschal "warn" liefern.
+        # aber eine aktive Bridge-Firewall-Filter-Regel schliesst die Luecke auf Layer 2.
+        # 2026-11-05: Gruen nur mit Forward-Sperre, sonst bleibt der Umweg ueber den Router offen
+        # (am CHR gemessen, Szenarien flach-filter und flach-filter-fw).
         session_id = "security-check-bridge-filter-closes-session"
         core_module.SESSIONS[session_id] = {
             "host": "secheck-bridge-filter-host", "user": "admin", "password": "x", "ssh_port": 22,
@@ -1958,13 +1959,32 @@ class ApiTest(unittest.TestCase):
                 return "0 interface=guest bridge=bridge\n1 interface=ether2 bridge=bridge\n"
             if command == "/interface bridge filter print terse where chain=forward":
                 return "0 chain=forward action=drop in-interface=guest disabled=false\n"
+            if command == '/interface bridge print terse where name="bridge"':
+                return "0 name=bridge vlan-filtering=no\n"
+            if command == '/ip address print terse where interface="bridge"':
+                return "0 interface=bridge address=192.168.88.1/24\n"
+            if command == "/interface bridge port print terse":
+                return "0 interface=guest bridge=bridge\n1 interface=ether2 bridge=bridge\n"
+            if command == "/ipv6 settings print":
+                return "  disable-ipv6: yes\n"
+            if command == "/ip firewall filter print terse where chain=forward":
+                return regeln
+            if command == "/ip address print terse":
+                return "0 address=192.168.88.1/24 interface=bridge\n"
             return fake_router(command)
 
+        regeln = "0 chain=forward action=drop in-interface=bridge out-interface-list=LAN\n"
         with patch("core.router", side_effect=router_stub):
             resp = self.client.get("/api/v1/security-check", headers=headers)
         by_id = {c["id"]: c for c in resp.get_json()["checks"]}
         self.assertEqual(by_id["guest_isolation"]["status"], "good")
         self.assertIn("Bridge-Firewall-Filter", by_id["guest_isolation"]["detail"])
+
+        regeln = ""
+        with patch("core.router", side_effect=router_stub):
+            resp = self.client.get("/api/v1/security-check", headers=headers)
+        by_id = {c["id"]: c for c in resp.get_json()["checks"]}
+        self.assertEqual(by_id["guest_isolation"]["status"], "unknown")
 
     def test_security_check_guest_isolation_good_when_vlan_closes_the_bypass(self):
         session_id = "security-check-vlan-closes-session"
@@ -1976,21 +1996,42 @@ class ApiTest(unittest.TestCase):
 
         def router_stub(command):
             if command == '/interface bridge port print terse where interface="guest"':
-                return "0 interface=guest bridge=bridge pvid=20\n"
+                return "0 interface=guest bridge=bridge pvid=20 ingress-filtering=yes frame-types=admit-all\n"
             if command == '/interface list member print terse where list="LAN"':
-                return "0 list=LAN interface=bridge\n"
+                return "0 list=LAN interface=bridge\n1 list=LAN interface=vlan10\n"
             if command == "/interface bridge settings print":
                 return "  use-ip-firewall: no\n"
             if command == '/interface bridge port print terse where bridge="bridge"':
                 return "0 interface=guest bridge=bridge\n1 interface=ether2 bridge=bridge\n"
+            if command == "/interface bridge port print terse":
+                return "0 interface=guest bridge=bridge\n1 interface=ether2 bridge=bridge\n"
             if command == "/interface bridge filter print terse where chain=forward":
                 return ""
             if command == '/interface bridge print terse where name="bridge"':
-                return "0 name=bridge vlan-filtering=yes\n"
+                return "0 name=bridge vlan-filtering=yes pvid=1\n"
             if command == '/interface bridge vlan print terse where bridge="bridge"':
-                return "0 bridge=bridge vlan-ids=20 current-untagged=guest\n"
+                return "0 bridge=bridge vlan-ids=20 current-tagged=bridge current-untagged=guest\n"
+            if command == '/interface vlan print terse where interface="bridge"':
+                return "0 name=vlan20 interface=bridge vlan-id=20\n1 name=vlan10 interface=bridge vlan-id=10\n"
+            if command == '/ip address print terse where interface="vlan20"':
+                return "0 interface=vlan20 address=192.168.20.1/24\n"
+            if command == "/ipv6 settings print":
+                return "  disable-ipv6: yes\n"
+            if command == "/ip firewall filter print terse where chain=forward":
+                return regeln
+            if command == "/ip address print terse":
+                return "0 address=192.168.10.1/24 interface=vlan10\n1 address=192.168.20.1/24 interface=vlan20\n"
             return fake_router(command)
 
+        # 2026-11-05: Eine VLAN-Trennung allein ist kein Gruen. Der Router routet zwischen den VLANs,
+        # am CHR mit echten Clients gemessen (Szenario vlan-br-in-lan-ohne-fw, Ping kommt durch).
+        regeln = ""
+        with patch("core.router", side_effect=router_stub):
+            resp = self.client.get("/api/v1/security-check", headers=headers)
+        by_id = {c["id"]: c for c in resp.get_json()["checks"]}
+        self.assertEqual(by_id["guest_isolation"]["status"], "unknown")
+
+        regeln = "0 chain=forward action=drop in-interface=vlan20 out-interface-list=LAN\n"
         with patch("core.router", side_effect=router_stub):
             resp = self.client.get("/api/v1/security-check", headers=headers)
         by_id = {c["id"]: c for c in resp.get_json()["checks"]}
@@ -2018,6 +2059,10 @@ class ApiTest(unittest.TestCase):
                 return "  disable-ipv6: no\n"
             if command == "/ipv6 firewall filter print terse where chain=forward":
                 return "0 chain=forward action=accept in-interface=guest out-interface-list=LAN disabled=false\n"
+            if command == "/ip address print terse":
+                return "0 address=192.168.88.1/24 interface=bridge\n"
+            if command == "/ipv6 address print terse":
+                return "0 address=fd00::1/64 interface=bridge\n"
             return fake_router(command)
 
         with patch("core.router", side_effect=router_stub):
@@ -2039,10 +2084,14 @@ class ApiTest(unittest.TestCase):
                 return "0 list=LAN interface=bridge\n"
             if command == '/interface bridge port print terse where interface="guest"':
                 return ""
+            if command == '/interface print terse where name="guest"':
+                return "0 name=guest\n"
             if command == "/ip firewall filter print terse where chain=forward":
                 return "0 chain=forward action=drop in-interface=guest out-interface-list=LAN disabled=false\n"
             if command == "/ipv6 settings print":
                 return "  disable-ipv6: yes\n"
+            if command == "/ip address print terse":
+                return "0 address=192.168.88.1/24 interface=bridge\n"
             return fake_router(command)
 
         with patch("core.router", side_effect=router_stub):

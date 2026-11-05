@@ -497,5 +497,41 @@ class SshMultiplexingTest(unittest.TestCase):
             self.assertNotIn("sshpass", command)
 
 
+class NichtAsciiMaskierungTest(unittest.TestCase):
+    """Am CHR gemessen: Roh gesendete Umlaute verschwinden ohne Fehlermeldung, maskierte stimmen."""
+
+    def test_umlaut_im_string_wird_zu_utf8_bytes(self):
+        self.assertEqual(routeros._maskiere_nicht_ascii('where name="G\u00e4ste"'), 'where name="G\\C3\\A4ste"')
+        self.assertEqual(routeros._maskiere_nicht_ascii('set comment="\u00b2"'), 'set comment="\\C2\\B2"')
+
+    def test_ascii_bleibt_unveraendert(self):
+        for befehl in ('/ip address print terse where interface="ether1"', "/system identity print", 'x="a\\"b"', 'p="a\\$b"'):
+            with self.subTest(befehl=befehl):
+                self.assertEqual(routeros._maskiere_nicht_ascii(befehl), befehl)
+
+    def test_ausserhalb_von_anfuehrungszeichen_bleibt_es_stehen(self):
+        # RouterOS meldet dort "expected end of command", am CHR gemessen.
+        self.assertEqual(routeros._maskiere_nicht_ascii("set comment=\u00e4"), "set comment=\u00e4")
+
+    def test_maskiertes_anfuehrungszeichen_beendet_den_string_nicht(self):
+        self.assertEqual(routeros._maskiere_nicht_ascii('c="a\\"\u00e4" d=\u00e4'), 'c="a\\"\\C3\\A4" d=\u00e4')
+
+    def test_doppelter_backslash_vor_umlaut(self):
+        self.assertEqual(routeros._maskiere_nicht_ascii('c="a\\\\\u00e4"'), 'c="a\\\\\\C3\\A4"')
+
+    def test_ende_nach_backslash(self):
+        self.assertEqual(routeros._maskiere_nicht_ascii('c="a\\'), 'c="a\\')
+
+    def test_rohbyte_aus_der_ausgabe_bleibt_ein_byte(self):
+        self.assertEqual(routeros._maskiere_nicht_ascii('c="\udcb2"'), 'c="\\B2"')
+
+    @patch("routeros.subprocess.run")
+    def test_run_command_sendet_die_maskierte_form(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.object(routeros, "multiplexing_enabled", return_value=False):
+            run_command("host", "user", "pass", 22, 'set comment="\u00e4"', known_hosts_path="/tmp/kh")
+        self.assertEqual(mock_run.call_args[0][0][-1], 'set comment="\\C3\\A4"')
+
+
 if __name__ == "__main__":
     unittest.main()

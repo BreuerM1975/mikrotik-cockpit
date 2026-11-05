@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import core
 import routes_basis
-from routeros import RouterCommandFailed, parse_terse
+from routeros import RouterCommandFailed, RouterTimeout, parse_terse
 
 
 class ServiceEvidenceTests(unittest.TestCase):
@@ -297,7 +297,7 @@ class VlanIsolationTests(unittest.TestCase):
             if command == '/interface bridge print terse where name="bridge"':
                 return f"0 name=bridge vlan-filtering={vlan_filtering}\n"
             if command == '/interface bridge port print terse where interface="guest"':
-                return f"0 interface=guest bridge=bridge pvid={pvid}\n"
+                return f"0 interface=guest bridge=bridge pvid={pvid} ingress-filtering=yes frame-types=admit-all\n"
             if command == '/interface list member print terse where list="LAN"':
                 return "0 list=LAN interface=bridge\n"
             if command == '/interface bridge port print terse where bridge="bridge"':
@@ -417,3 +417,1274 @@ class Ipv6InputFirewallTests(unittest.TestCase):
         with patch.object(core, "router", side_effect=router_stub):
             result = routes_basis._security_check_input_firewall()
         self.assertEqual(result["status"], "unknown")
+
+class GastPfadTests(unittest.TestCase):
+    """Das Gesamturteil ueber Layer 2 und Layer 3. Die Topologien entsprechen den Szenarien des
+    Wahrheitstests mit echten Clients am CHR (2026-11-05), die Zeilen dem Format aus RouterOS."""
+
+    FW4 = "/ip firewall filter print terse where chain=forward"
+    FW6 = "/ipv6 firewall filter print terse where chain=forward"
+
+    def _vlan(self, regeln="", regeln6=None, lan="vlan10", gast_pvid="20", ingress="yes", frames="admit-all",
+              vlan_ifs=("vlan10", "vlan20"), adressen=("vlan10", "vlan20"), v6=("vlan10", "vlan20"),
+              tabelle=None, weitere_ports="", bridge_pvid="1"):
+        """Bridge br mit VLAN-Filter: ether3 ist der Gast, ether4 das Haus."""
+        ids = {"vlan10": "10", "vlan20": "20"}
+        antworten = {
+            '/interface bridge port print terse where interface="ether3"':
+                f"0 interface=ether3 bridge=br pvid={gast_pvid} ingress-filtering={ingress} frame-types={frames}\n",
+            '/interface bridge print terse where name="br"': f"0 name=br vlan-filtering=yes pvid={bridge_pvid}\n",
+            '/interface bridge port print terse where bridge="br"':
+                "0 interface=ether3 bridge=br\n1 interface=ether4 bridge=br\n" + weitere_ports,
+            "/interface bridge port print terse":
+                "0 interface=ether3 bridge=br\n1 interface=ether4 bridge=br\n" + weitere_ports,
+            '/interface bridge vlan print terse where bridge="br"': tabelle if tabelle is not None else (
+                "0 bridge=br vlan-ids=10 current-tagged=br current-untagged=ether4 tagged=br untagged=\n"
+                "1 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3 tagged=br untagged=\n"),
+            '/interface vlan print terse where interface="br"':
+                "".join(f"{i} name={n} interface=br vlan-id={ids[n]}\n" for i, n in enumerate(vlan_ifs)),
+            '/interface list member print terse where list="LAN"':
+                "".join(f"{i} list=LAN interface={n}\n" for i, n in enumerate(lan.split(","))),
+            "/ipv6 settings print": "  disable-ipv6: no\n",
+            self.FW4: regeln,
+            self.FW6: regeln if regeln6 is None else regeln6,
+            '/interface wifi print terse where name="ether3"': "",
+            '/interface wireless print terse where name="ether3"': "",
+        }
+        antworten["/ip address print terse"] = "".join(f"{i} interface={n} address=192.168.{ids[n]}.1/24\n" for i, n in enumerate(adressen))
+        antworten["/ipv6 address print terse"] = "".join(f"{i} interface={n} address=fd00:{ids[n]}::1/64\n" for i, n in enumerate(v6))
+        for n in adressen:
+            antworten[f'/ip address print terse where interface="{n}"'] = f"0 interface={n} address=192.168.{ids[n]}.1/24\n"
+        for n in v6:
+            antworten[f'/ipv6 address print terse where interface="{n}"'] = (
+                f"0 DL address=fe80::1/64 interface={n}\n1 address=fd00:{ids[n]}::1/64 interface={n}\n")
+        return antworten
+
+    def _befund(self, antworten, name="ether3"):
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            return core._gast_befund(name)
+
+    SPERRE = "0 chain=forward action=drop in-interface=vlan20 out-interface-list=LAN\n"
+
+    def test_vlan_ohne_firewall_ist_nicht_gruen(self):
+        befund = self._befund(self._vlan())
+        self.assertEqual(befund["status"], "unknown")
+        self.assertIs(befund["schicht2"]["getrennt"], True)
+        self.assertIsNone(befund["v4"])
+
+    def test_vlan_mit_sperre_ist_gruen(self):
+        self.assertEqual(self._befund(self._vlan(self.SPERRE))["status"], "good")
+
+    def test_bridge_in_lan_aendert_daran_nichts(self):
+        self.assertEqual(self._befund(self._vlan(lan="br,vlan10"))["status"], "unknown")
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, lan="br,vlan10"))["status"], "good")
+
+    def test_vlan_freigabe_vor_der_sperre_ist_ein_leck(self):
+        regeln = "0 chain=forward action=accept in-interface=vlan20 out-interface-list=LAN\n" + self.SPERRE
+        self.assertEqual(self._befund(self._vlan(regeln))["status"], "warn")
+
+    def test_sperre_nur_auf_den_port_belegt_nichts(self):
+        regeln = "0 chain=forward action=drop in-interface=ether3 out-interface-list=LAN\n"
+        self.assertEqual(self._befund(self._vlan(regeln))["status"], "unknown")
+
+    def test_freigabe_nur_auf_den_port_ist_kein_leck(self):
+        regeln = "0 chain=forward action=accept in-interface=ether3 out-interface-list=LAN\n" + self.SPERRE
+        self.assertEqual(self._befund(self._vlan(regeln))["status"], "good")
+
+    def test_gast_vlan_selbst_in_lan_ist_der_normalfall(self):
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, lan="vlan10,vlan20"))["status"], "good")
+
+    def test_nur_gast_vlan_in_lan_belegt_nichts(self):
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, lan="vlan20"))["status"], "unknown")
+
+    def test_lan_nur_aus_bridge_ports_belegt_nichts(self):
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, lan="ether4"))["status"], "unknown")
+
+    def test_bridge_ports_in_lan_stoeren_die_regelliste_nicht(self):
+        # Wie am L009: LAN nennt auch die Ports, die Regel nennt die Liste "vlans".
+        regeln = "0 chain=forward action=drop in-interface=vlan20 out-interface-list=vlans\n"
+        antworten = self._vlan(regeln, lan="ether4,vlan10,vlan20")
+        antworten['/interface list member print terse where list="vlans"'] = "0 list=vlans interface=vlan10\n1 list=vlans interface=vlan20\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_quellliste_wird_gegen_das_vlan_interface_geprueft(self):
+        regeln4 = "0 chain=forward action=drop in-interface=vlan20 out-interface-list=LAN src-address-list=g\n"
+        antworten = self._vlan(regeln4, regeln6=self.SPERRE)
+        antworten['/ip firewall address-list print terse where list="g" and dynamic=no'] = "0 list=g address=192.168.20.0/24\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+        antworten['/ip firewall address-list print terse where list="g" and dynamic=no'] = "0 list=g address=10.0.0.0/8\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_zielliste_privater_netze(self):
+        regeln4 = "0 chain=forward action=drop in-interface=vlan20 dst-address-list=privat\n"
+        antworten = self._vlan(regeln4, regeln6=self.SPERRE, lan="br,ether4,vlan10,vlan20")
+        antworten['/ip firewall address-list print terse where list="privat" and dynamic=no'] = "0 list=privat address=192.168.0.0/16\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+        antworten['/ip firewall address-list print terse where list="privat" and dynamic=no'] = "0 list=privat address=10.0.0.0/8\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_zielliste_ohne_geroutetes_hausnetz_belegt_nichts(self):
+        with patch.object(core, "router", side_effect=lambda c: {
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=br\n",
+            '/ip firewall address-list print terse where list="a" and dynamic=no': "0 list=a address=192.168.0.0/16\n",
+        }.get(c, "")):
+            self.assertIsNone(core._address_list_covers_interface("a", "LAN"))
+
+    def test_ipv6_ohne_regel_ist_nicht_gruen(self):
+        befund = self._befund(self._vlan(self.SPERRE, regeln6=""))
+        self.assertEqual(befund["status"], "unknown")
+        self.assertIs(befund["v4"], True)
+        self.assertIsNone(befund["v6"])
+
+    def test_ipv6_freigabe_ist_ein_leck(self):
+        regeln6 = "0 chain=forward action=accept in-interface=vlan20 out-interface-list=LAN\n"
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, regeln6=regeln6))["status"], "warn")
+
+    def test_link_local_zaehlt_nicht_als_routing(self):
+        antworten = {'/ipv6 address print terse where interface="x"': "0 DL address=fe80::1/64 interface=x\n"}
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertIs(core._hat_routbare_adresse("x", "/ipv6 firewall filter"), False)
+
+    def test_abgeschaltete_adresse_zaehlt_nicht_als_routing(self):
+        antworten = {'/ip address print terse where interface="x"': "0 X address=192.0.2.1/24 interface=x\n"}
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertIs(core._hat_routbare_adresse("x", "/ip firewall filter"), False)
+
+    def test_ipv6_paket_fehlt_heisst_keine_adresse(self):
+        def stub(command):
+            raise core.RouterCommandFailed("bad command name")
+        with patch.object(core, "router", side_effect=stub):
+            self.assertIs(core._hat_routbare_adresse("x", "/ipv6 firewall filter"), False)
+            self.assertIsNone(core._hat_routbare_adresse("x", "/ip firewall filter"))
+
+    def test_gleiches_vlan_mit_lan_port_ist_ein_leck(self):
+        tabelle = "0 bridge=br vlan-ids=10 current-tagged=br current-untagged=ether3,ether4\n"
+        befund = self._befund(self._vlan(gast_pvid="10", lan="vlan10,ether4", vlan_ifs=("vlan10",), adressen=("vlan10",), v6=("vlan10",), tabelle=tabelle))
+        self.assertEqual(befund["status"], "warn")
+        self.assertEqual(befund["schicht2"]["beleg"], "vlan_geteilt")
+
+    def test_trunk_ist_kein_leck(self):
+        tabelle = ("0 bridge=br vlan-ids=10 current-tagged=br,ether5 current-untagged=ether4\n"
+                   "1 bridge=br vlan-ids=20 current-tagged=br,ether5 current-untagged=ether3\n")
+        antworten = self._vlan(self.SPERRE, lan="vlan10,ether5", tabelle=tabelle, weitere_ports="2 interface=ether5 bridge=br\n")
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_bridge_in_lan_mit_weiterem_ungetaggten_port_ist_unklar(self):
+        # Zweites Gast-Funkband oder Hausnetz-Port? Wenn LAN nur die Bridge nennt, steht das nirgends.
+        tabelle = "0 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3,ether4\n"
+        befund = self._befund(self._vlan(self.SPERRE, lan="br", tabelle=tabelle))
+        self.assertEqual(befund["schicht2"]["beleg"], "vlan_unklar")
+        self.assertEqual(befund["status"], "unknown")
+
+    def test_gast_in_der_pvid_der_bridge_mit_bridge_in_lan_ist_ein_leck(self):
+        tabelle = "0 bridge=br vlan-ids=1 current-untagged=br,ether3\n"
+        befund = self._befund(self._vlan(gast_pvid="1", lan="br", tabelle=tabelle, vlan_ifs=(), adressen=(), v6=()))
+        self.assertEqual(befund["status"], "warn")
+
+    def test_gast_in_der_pvid_der_bridge_routet_ueber_die_bridge(self):
+        antworten = self._vlan(gast_pvid="1", vlan_ifs=(), adressen=(), v6=())
+        antworten['/ip address print terse where interface="br"'] = "0 interface=br address=192.168.1.1/24\n"
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertEqual(core._gast_eingang("ether3"), {"br"})
+
+    def test_ohne_ingress_filter_taggt_sich_der_gast_selbst_ins_hausnetz(self):
+        befund = self._befund(self._vlan(self.SPERRE, ingress="no"))
+        self.assertEqual(befund["status"], "warn")
+        self.assertEqual(befund["schicht2"]["beleg"], "vlan_geteilt")
+
+    def test_ohne_ingress_filter_aber_nur_ungetaggt_ist_dicht(self):
+        antworten = self._vlan(self.SPERRE, ingress="no", frames="admit-only-untagged-and-priority-tagged")
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_nur_getaggt_ohne_ingress_filter_ist_nicht_dicht(self):
+        antworten = self._vlan(self.SPERRE, ingress="no", frames="admit-only-vlan-tagged")
+        self.assertEqual(self._befund(antworten)["status"], "warn")
+
+    def test_fehlendes_ingress_feld_bleibt_unklar(self):
+        antworten = self._vlan(self.SPERRE)
+        antworten['/interface bridge port print terse where interface="ether3"'] = "0 interface=ether3 bridge=br pvid=20\n"
+        befund = self._befund(antworten)
+        self.assertEqual(befund["status"], "unknown")
+        self.assertEqual(befund["schicht2"]["beleg"], "vlan_unklar")
+
+    def test_insel_ohne_router_und_ohne_weg_hinaus(self):
+        tabelle = ("0 bridge=br vlan-ids=10 current-tagged=br current-untagged=ether4\n"
+                   "1 D bridge=br vlan-ids=20 current-untagged=ether3\n")
+        befund = self._befund(self._vlan(vlan_ifs=("vlan10",), adressen=("vlan10",), v6=("vlan10",), tabelle=tabelle))
+        self.assertEqual(befund["status"], "good")
+        self.assertEqual(befund["v4"], "insel")
+
+    def test_trunk_ohne_router_hier_verweist_auf_das_andere_geraet(self):
+        tabelle = ("0 bridge=br vlan-ids=10 current-tagged=br,ether5 current-untagged=ether4\n"
+                   "1 bridge=br vlan-ids=20 current-tagged=ether5 current-untagged=ether3\n")
+        antworten = self._vlan(vlan_ifs=("vlan10",), adressen=("vlan10",), v6=("vlan10",), tabelle=tabelle, weitere_ports="2 interface=ether5 bridge=br\n")
+        befund = self._befund(antworten)
+        self.assertEqual(befund["status"], "unknown")
+        self.assertEqual(befund["v4"], "extern")
+        self.assertEqual(befund["v6"], "extern")
+
+    def test_vlan_interface_ohne_adresse_routet_nicht(self):
+        # Wie am hAP ax2: VLAN-Interface Guest ohne IP, Router ist ein anderes Geraet.
+        tabelle = ("0 bridge=br vlan-ids=10 current-tagged=br,ether5 current-untagged=ether4\n"
+                   "1 bridge=br vlan-ids=20 current-tagged=br,ether5 current-untagged=ether3\n")
+        antworten = self._vlan(adressen=("vlan10",), v6=("vlan10",), tabelle=tabelle, weitere_ports="2 interface=ether5 bridge=br\n")
+        self.assertEqual(self._befund(antworten)["v4"], "extern")
+
+    def test_nur_ipv6_extern_wird_nicht_zu_keine_adresse(self):
+        tabelle = ("0 bridge=br vlan-ids=10 current-tagged=br,ether5 current-untagged=ether4\n"
+                   "1 bridge=br vlan-ids=20 current-tagged=ether5 current-untagged=ether3\n")
+        antworten = self._vlan(self.SPERRE, vlan_ifs=("vlan10",), adressen=("vlan10",), v6=("vlan10",), tabelle=tabelle, weitere_ports="2 interface=ether5 bridge=br\n")
+        self.assertEqual(self._befund(antworten)["v6"], "extern")
+
+    def test_wlan_mit_eigenem_vlan_bleibt_unklar(self):
+        for zeile in ("0 name=ether3 datapath.vlan-id=30\n", "0 name=ether3 datapath=dp-gast\n"):
+            antworten = self._vlan(self.SPERRE)
+            antworten['/interface wifi print terse where name="ether3"'] = zeile
+            with self.subTest(zeile=zeile):
+                self.assertEqual(self._befund(antworten)["status"], "unknown")
+        antworten = self._vlan(self.SPERRE)
+        antworten['/interface wireless print terse where name="ether3"'] = "0 name=ether3 vlan-mode=use-tag vlan-id=30\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_wlan_ohne_eigenes_vlan_nutzt_die_pvid(self):
+        antworten = self._vlan(self.SPERRE)
+        antworten['/interface wifi print terse where name="ether3"'] = "0 name=ether3 datapath.bridge=br configuration.mode=ap\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_wlan_nicht_lesbar_bleibt_unklar(self):
+        def stub(command):
+            if "/interface wifi" in command:
+                raise core.RouterUnreachable("weg")
+            return ""
+        with patch.object(core, "router", side_effect=stub):
+            self.assertIsNone(core._wlan_setzt_vlan("ether3"))
+
+    def test_fehlendes_wifi_menue_ist_kein_vlan(self):
+        def stub(command):
+            raise core.RouterCommandFailed("bad command name")
+        with patch.object(core, "router", side_effect=stub):
+            self.assertIs(core._wlan_setzt_vlan("ether3"), False)
+
+    def _eigene_bridge(self, regeln="", adresse=True, weitere=""):
+        antworten = {
+            '/interface bridge port print terse where interface="ether3"': "0 interface=ether3 bridge=brg pvid=1\n",
+            '/interface bridge print terse where name="brg"': "0 name=brg vlan-filtering=no pvid=1\n",
+            '/interface bridge port print terse where bridge="brg"': "0 interface=ether3 bridge=brg\n" + weitere,
+            "/interface bridge port print terse": "0 interface=ether3 bridge=brg\n" + weitere,
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=ether4\n",
+            "/ipv6 settings print": "  disable-ipv6: yes\n",
+            self.FW4: regeln,
+        }
+        if adresse:
+            antworten['/ip address print terse where interface="brg"'] = "0 interface=brg address=192.168.20.1/24\n"
+        return antworten
+
+    def test_eigene_bridge(self):
+        self.assertEqual(self._befund(self._eigene_bridge())["status"], "unknown")
+        self.assertEqual(self._befund(self._eigene_bridge("0 chain=forward action=drop in-interface=brg out-interface-list=LAN\n"))["status"], "good")
+        self.assertEqual(self._befund(self._eigene_bridge("0 chain=forward action=drop in-interface=ether3 out-interface-list=LAN\n"))["status"], "unknown")
+        self.assertEqual(self._befund(self._eigene_bridge(adresse=False))["v4"], "insel")
+        self.assertEqual(self._befund(self._eigene_bridge(adresse=False, weitere="1 interface=ether5 bridge=brg\n"))["v4"], "extern")
+
+    def test_quellliste_mit_dem_eingang_gilt_auch_an_der_bridge(self):
+        antworten = self._eigene_bridge("0 chain=forward action=drop in-interface-list=g out-interface-list=LAN\n")
+        antworten['/interface list member print terse where list="g"'] = "0 list=g interface=brg\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+        antworten['/interface list member print terse where list="g"'] = "0 list=g interface=ether3\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_negierter_eingang(self):
+        antworten = self._eigene_bridge("0 chain=forward action=accept in-interface=!brg out-interface-list=LAN\n"
+                                        "1 chain=forward action=drop in-interface=brg out-interface-list=LAN\n")
+        self.assertEqual(self._befund(antworten)["status"], "good")
+        antworten = self._eigene_bridge("0 chain=forward action=accept in-interface=!ether7 out-interface-list=LAN\n"
+                                        "1 chain=forward action=drop in-interface=brg out-interface-list=LAN\n")
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def _flach(self, regeln="", filter_regeln=""):
+        return {
+            '/interface bridge port print terse where interface="ether3"': "0 interface=ether3 bridge=br pvid=1\n",
+            '/interface bridge print terse where name="br"': "0 name=br vlan-filtering=no pvid=1\n",
+            '/interface bridge port print terse where bridge="br"': "0 interface=ether3 bridge=br\n1 interface=ether4 bridge=br\n",
+            "/interface bridge port print terse": "0 interface=ether3 bridge=br\n1 interface=ether4 bridge=br\n",
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=br\n",
+            "/interface bridge settings print": "  use-ip-firewall: no\n",
+            "/interface bridge filter print terse where chain=forward": filter_regeln,
+            '/ip address print terse where interface="br"': "0 interface=br address=192.168.10.1/24\n",
+            "/ipv6 settings print": "  disable-ipv6: yes\n",
+            self.FW4: regeln,
+        }
+
+    FILTER = "0 chain=forward action=drop in-interface=ether3 out-interface=ether4\n"
+
+    def test_flach_ist_ein_leck(self):
+        befund = self._befund(self._flach())
+        self.assertEqual(befund["status"], "warn")
+        self.assertEqual(befund["schicht2"]["beleg"], "bypass")
+
+    def test_flach_mit_filter_laesst_den_umweg_ueber_den_router_offen(self):
+        self.assertEqual(self._befund(self._flach(filter_regeln=self.FILTER))["status"], "unknown")
+
+    def test_flach_mit_filter_und_forward_sperre_ist_gruen(self):
+        regeln = "0 chain=forward action=drop in-interface=br out-interface-list=LAN\n"
+        self.assertEqual(self._befund(self._flach(regeln, self.FILTER))["status"], "good")
+
+    def test_flach_mit_filter_und_freigabe_ist_ein_leck(self):
+        regeln = "0 chain=forward action=accept in-interface=br out-interface-list=LAN\n"
+        self.assertEqual(self._befund(self._flach(regeln, self.FILTER))["status"], "warn")
+
+    def test_vlan_geteilt_mit_filter_und_sperre(self):
+        tabelle = "0 bridge=br vlan-ids=10 current-tagged=br current-untagged=ether3,ether4\n"
+        antworten = self._vlan("0 chain=forward action=drop in-interface=vlan10 out-interface-list=LAN\n", gast_pvid="10", lan="vlan10,ether4", vlan_ifs=("vlan10",), adressen=("vlan10",), v6=("vlan10",), tabelle=tabelle)
+        antworten["/interface bridge filter print terse where chain=forward"] = self.FILTER
+        befund = self._befund(antworten)
+        self.assertEqual(befund["schicht2"]["beleg"], "filter")
+        self.assertEqual(befund["status"], "good")
+
+    def test_ohne_vlan_filter_erreicht_der_gast_die_vlan_interfaces(self):
+        antworten = self._flach("0 chain=forward action=drop in-interface=br out-interface-list=LAN\n")
+        antworten['/interface list member print terse where list="LAN"'] = "0 list=LAN interface=vlan10\n"
+        antworten['/interface vlan print terse where interface="br"'] = "0 name=vlan10 interface=br vlan-id=10\n"
+        befund = self._befund(antworten)
+        self.assertEqual(befund["status"], "warn")
+        self.assertEqual(befund["schicht2"]["beleg"], "bypass")
+
+    def test_vlan_filter_verhindert_diesen_bypass(self):
+        antworten = {
+            '/interface bridge port print terse where interface="g"': "0 interface=g bridge=br\n",
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=vlan10\n",
+            '/interface vlan print terse where interface="br"': "0 name=vlan10 interface=br vlan-id=10\n",
+            '/interface bridge print terse where name="br"': "0 name=br vlan-filtering=yes\n",
+        }
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertIs(core._guest_bridge_bypass("g"), False)
+
+    def test_bypass_vlan_abfrage_fehlgeschlagen_bleibt_unklar(self):
+        def stub(command):
+            if command.startswith("/interface vlan"):
+                raise core.RouterCommandFailed("failure")
+            return {'/interface bridge port print terse where interface="g"': "0 interface=g bridge=br\n",
+                    '/interface list member print terse where list="LAN"': "0 list=LAN interface=x\n"}.get(command, "")
+        with patch.object(core, "router", side_effect=stub):
+            self.assertIsNone(core._guest_bridge_bypass("g"))
+
+    def test_normalfall_ohne_bridge(self):
+        antworten = {
+            '/interface print terse where name="wlan-gast"': "0 name=wlan-gast\n",
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=bridge\n",
+            "/ipv6 settings print": "  disable-ipv6: no\n",
+            self.FW4: "0 chain=forward action=drop in-interface=wlan-gast out-interface-list=LAN\n",
+            self.FW6: "0 chain=forward action=drop in-interface=wlan-gast out-interface-list=LAN\n",
+        }
+        befund = self._befund(antworten, name="wlan-gast")
+        self.assertEqual(befund["status"], "good")
+        self.assertEqual(befund["schicht2"]["beleg"], "keine_bridge")
+
+    def test_lesefehler_bleiben_unklar(self):
+        def stub(ziel):
+            def innen(command):
+                if ziel in command:
+                    raise core.RouterCommandFailed("failure")
+                return self._vlan(self.SPERRE).get(command, "")
+            return innen
+        for ziel in ('where interface="ether3"', '/interface bridge print', 'where interface="vlan20"', 'print terse where interface="br"', '/interface bridge port print terse', '/interface bridge vlan'):
+            with self.subTest(ziel=ziel), patch.object(core, "router", side_effect=stub(ziel)):
+                self.assertNotEqual(core._gast_befund("ether3")["status"], "good")
+
+    def test_weiterer_weg_im_zweifel_ja(self):
+        def weg(command):
+            raise core.RouterCommandFailed("failure")
+        with patch.object(core, "router", side_effect=weg):
+            self.assertIs(core._gast_hat_weiteren_weg("g", "br"), True)
+        with patch.object(core, "router", return_value=""):
+            self.assertIs(core._gast_hat_weiteren_weg("g", "br"), True)
+
+    def test_pro_karte_nutzt_dasselbe_urteil(self):
+        # Vorher las die Karte nur die IPv4-Regeln und meldete "bestaetigt", wo der Check warnte.
+        for regeln6, erwartet in (("0 chain=forward action=accept in-interface=wlan out-interface-list=LAN\n", False),
+                                  ("", None),
+                                  ("0 chain=forward action=drop in-interface=wlan out-interface-list=LAN\n", True)):
+            antworten = {
+                '/interface print terse where name="wlan"': "0 name=wlan\n",
+                "/ipv6 address print terse": "0 interface=bridge address=fd00::1/64\n",
+                '/interface list member print terse where list="LAN"': "0 list=LAN interface=bridge\n",
+                "/ipv6 settings print": "  disable-ipv6: no\n",
+                self.FW4: "0 chain=forward action=drop in-interface=wlan out-interface-list=LAN\n",
+                self.FW6: regeln6,
+                '/interface wireless print terse where name="wlan"': '0 name=wlan ssid=Gast\n',
+            }
+            with self.subTest(erwartet=erwartet), patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")), \
+                    patch.object(core, "_wireless_driver", return_value="wireless"):
+                self.assertIs(core._guest_row("wlan")[1]["isolated"], erwartet)
+
+    def test_unbekannter_name_ist_nicht_getrennt(self):
+        # Wie am hAP ax2: terse zeigt das Rohbyte 0xB2 als "axB2". Regel und Abfrage passen zum falschen
+        # Namen, der Gast haengt in Wahrheit an der Haus-Bridge (im Labor gemessen, Szenario name-mit-byte).
+        antworten = {
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=br\n",
+            "/ipv6 settings print": "  disable-ipv6: yes\n",
+            self.FW4: "0 chain=forward action=drop in-interface=gastB2 out-interface-list=LAN\n",
+        }
+        befund = self._befund(antworten, name="gastB2")
+        self.assertEqual(befund["status"], "unknown")
+        self.assertIsNone(befund["schicht2"]["getrennt"])
+        self.assertEqual(befund["schicht2"]["beleg"], "name_unbekannt")
+
+    def test_unlesbare_interface_liste_ist_nicht_getrennt(self):
+        with self._router({}, fehler=('/interface print terse where name="ether3"',)):
+            schicht2 = core._gast_layer2("ether3")
+        self.assertIsNone(schicht2["getrennt"])
+        self.assertEqual(schicht2["beleg"], "unlesbar")
+
+    def test_check_nennt_den_unbekannten_namen(self):
+        self.assertIn("nicht zu finden", self._check("unknown", beleg="name_unbekannt")["detail"])
+
+    def _nicht_wan(self, regel, lan="vlan10"):
+        antworten = self._vlan(regel, lan=lan)
+        antworten['/interface list member print terse where list="WAN"'] = "0 list=WAN interface=ether1\n"
+        return antworten
+
+    def test_sperre_alles_ausser_wan_als_liste(self):
+        regel = "0 chain=forward action=drop in-interface=vlan20 out-interface-list=!WAN\n"
+        self.assertEqual(self._befund(self._nicht_wan(regel))["status"], "good")
+
+    def test_sperre_alles_ausser_wan_als_interface(self):
+        # Form der Regel am L009, dort mit connection-state=new.
+        regel = ("0 chain=forward action=drop connection-state=invalid\n"
+                 "1 chain=forward action=drop connection-state=new in-interface=vlan20 out-interface=!ether1\n")
+        self.assertEqual(self._befund(self._nicht_wan(regel))["status"], "good")
+
+    def test_fasttrack_nur_intern_oeffnet_nichts(self):
+        # Form der Regel am L009 aus dem CAKE-Umbau: betrifft nur bestehende Verbindungen.
+        for eingang in ("in-interface=!ether1 out-interface=!ether1", "in-interface-list=!WAN"):
+            with self.subTest(eingang=eingang):
+                regel = (f"0 chain=forward action=fasttrack-connection connection-state=established,related,untracked {eingang}\n"
+                         "1 chain=forward action=drop connection-state=invalid\n"
+                         "2 chain=forward action=drop connection-state=new in-interface=vlan20 out-interface=!ether1\n")
+                self.assertEqual(self._befund(self._nicht_wan(regel))["status"], "good")
+
+    def test_freigabe_mit_negiertem_eingang_bleibt_unklar_wenn_sie_oeffnen_kann(self):
+        for zustand in ("", "connection-state=new", "connection-state=established,new", "connection-state=!invalid", "connection-state=invalid"):
+            with self.subTest(zustand=zustand):
+                regel = (f"0 chain=forward action=accept in-interface=!ether1 {zustand}\n"
+                         "1 chain=forward action=drop connection-state=invalid\n"
+                         "2 chain=forward action=drop connection-state=new in-interface=vlan20 out-interface=!ether1\n")
+                self.assertEqual(self._befund(self._nicht_wan(regel))["status"], "unknown")
+
+    def test_nur_bestehende_verbindungen_zaehlen_nicht_ohne_verlaessliches_tracking(self):
+        # Mit notrack wird Gastverkehr "untracked", diese Freigabe laesst ihn also durch. Die Sperre dahinter
+        # greift ohne Zustand und wuerde sonst Gruen ergeben.
+        regel = ("0 chain=forward action=accept connection-state=established,related,untracked in-interface=!ether1\n"
+                 "1 chain=forward action=drop in-interface=vlan20 out-interface=!ether1\n")
+        antworten = self._nicht_wan(regel)
+        self.assertEqual(self._befund(antworten)["status"], "good")
+        antworten["/ip firewall raw print terse"] = "0 chain=prerouting action=notrack in-interface=vlan20\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    WAN_MEMBER = '/interface list member print terse where list="WAN"'
+
+    def _wan(self, regeln, adresse="192.168.178.2/24", wan="ether1", familie="/ip address print terse"):
+        antworten = self._vlan(regeln)
+        antworten[self.WAN_MEMBER] = "".join(f"{i} list=WAN interface={n}\n" for i, n in enumerate(wan.split(",")))
+        antworten[familie] += f"8 interface=ether1 address={adresse}\n"
+        return antworten
+
+    def test_netz_hinter_dem_wan_ist_durch_sperre_auf_lan_nicht_gedeckt(self):
+        befund = self._befund(self._wan(self.SPERRE))
+        self.assertEqual(befund["status"], "unknown")
+        self.assertIs(befund["hinter_router"], True)
+
+    def test_oeffentliche_wan_adresse_bleibt_ausserhalb(self):
+        for adresse in ("87.1.2.3/24", "100.64.1.2/24", "172.32.0.1/24", "11.0.0.1/24"):
+            with self.subTest(adresse=adresse):
+                befund = self._befund(self._wan(self.SPERRE, adresse=adresse))
+                self.assertEqual(befund["status"], "good")
+                self.assertIs(befund["hinter_router"], False)
+
+    def test_private_wan_netze_alle_drei(self):
+        for adresse in ("10.0.0.2/24", "172.16.0.2/24", "172.31.255.2/24", "192.168.178.2/24"):
+            with self.subTest(adresse=adresse):
+                self.assertEqual(self._befund(self._wan(self.SPERRE, adresse=adresse))["status"], "unknown")
+
+    def test_sperre_ausser_oeffentlichem_ausgang_deckt_privates_wan(self):
+        # Form am L009: ether1 mit privater Adresse zum Modem, Internet ueber pppoe-out1.
+        regel = "0 chain=forward action=drop in-interface=vlan20 out-interface=!pppoe-out1\n"
+        antworten = self._wan(regel, wan="ether1,pppoe-out1")
+        antworten["/ip address print terse"] += "9 interface=pppoe-out1 address=87.1.2.3/32\n"
+        befund = self._befund(antworten)
+        self.assertEqual(befund["status"], "good")
+        self.assertIs(befund["hinter_router"], True)
+
+    def test_sperre_ausser_privatem_wan_deckt_es_nicht(self):
+        regel = "0 chain=forward action=drop in-interface=vlan20 out-interface=!ether1\n"
+        self.assertEqual(self._befund(self._wan(regel))["status"], "unknown")
+
+    def test_freigabe_ins_private_wan_ist_unklar_nicht_rot(self):
+        for ziel in ("out-interface=ether1", "out-interface-list=WAN"):
+            with self.subTest(ziel=ziel):
+                regel = f"0 chain=forward action=accept in-interface=vlan20 {ziel}\n" + self.SPERRE
+                self.assertEqual(self._befund(self._wan(regel))["status"], "unknown")
+
+    def test_freigabe_ins_oeffentliche_wan_bleibt_gruen(self):
+        for ziel in ("out-interface=ether1", "out-interface-list=WAN"):
+            with self.subTest(ziel=ziel):
+                regel = f"0 chain=forward action=accept in-interface=vlan20 {ziel}\n" + self.SPERRE
+                self.assertEqual(self._befund(self._wan(regel, adresse="87.1.2.3/24"))["status"], "good")
+
+    def test_privates_wan_auch_bei_ipv6(self):
+        antworten = self._wan(self.SPERRE, adresse="fd12::2/64", familie="/ipv6 address print terse")
+        befund = self._befund(antworten)
+        self.assertIsNone(befund["v6"])
+        self.assertEqual(befund["status"], "unknown")
+
+    def test_freigabe_auf_oeffentliches_ziel_ausserhalb_von_wan_ist_unklar(self):
+        # Selbst geschriebene Firewall ohne Liste WAN. Der Satz "ins Hausnetz" waere falsch.
+        antworten = self._vlan("0 chain=forward action=accept in-interface=vlan20 out-interface=pppoe-out1\n" + self.SPERRE)
+        antworten["/ip address print terse"] += "8 interface=pppoe-out1 address=87.1.2.3/32\n"
+        antworten["/ipv6 address print terse"] += "8 interface=pppoe-out1 address=2a01::1/64\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_freigabe_auf_liste_mit_oeffentlichem_ziel_ist_unklar(self):
+        antworten = self._vlan("0 chain=forward action=accept in-interface=vlan20 out-interface-list=INTERNET\n" + self.SPERRE)
+        antworten['/interface list member print terse where list="INTERNET"'] = "0 list=INTERNET interface=pppoe-out1\n"
+        antworten["/ip address print terse"] += "8 interface=pppoe-out1 address=87.1.2.3/32\n"
+        antworten["/ipv6 address print terse"] += "8 interface=pppoe-out1 address=2a01::1/64\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_freigabe_auf_liste_mit_privatem_ziel_bleibt_ein_leck(self):
+        antworten = self._vlan("0 chain=forward action=accept in-interface=vlan20 out-interface-list=HOME\n" + self.SPERRE, lan="br")
+        antworten['/interface list member print terse where list="HOME"'] = "0 list=HOME interface=vlan10\n"
+        self.assertEqual(self._befund(antworten)["status"], "warn")
+
+    def test_leere_lan_liste_belegt_keine_vlan_trennung(self):
+        tabelle = "0 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3,ether4 tagged=br untagged=ether4\n"
+        antworten = self._vlan("0 chain=forward action=drop in-interface=vlan20\n", tabelle=tabelle)
+        antworten['/interface list member print terse where list="LAN"'] = ""
+        self.assertNotEqual(self._befund(antworten)["status"], "good")
+
+    def _sammelzeile(self, tabelle, lan="vlan10", ether4_pvid="10", frames="admit-all"):
+        antworten = self._vlan(self.SPERRE, lan=lan, tabelle=tabelle, frames=frames)
+        antworten['/interface bridge port print terse where bridge="br"'] = (
+            f"0 interface=ether3 bridge=br pvid=20\n1 interface=ether4 bridge=br pvid={ether4_pvid}\n2 interface=ether5 bridge=br pvid=1\n")
+        return antworten
+
+    def test_eigene_vlan_zeile_mit_festem_gastport_ist_kein_leck(self):
+        tabelle = ("0 bridge=br vlan-ids=10 tagged=br untagged=ether4 current-tagged=br current-untagged=ether4\n"
+                   "1 bridge=br vlan-ids=20 tagged=br untagged=ether3 current-tagged=br current-untagged=ether3\n")
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, tabelle=tabelle))["status"], "good")
+
+    def test_sammelzeile_mit_untagged_hausport_ist_ein_leck(self):
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br untagged=ether3,ether4 current-tagged=br current-untagged=ether3,ether4\n"
+        self.assertEqual(self._befund(self._sammelzeile(tabelle))["status"], "warn")
+
+    def test_sammelzeile_mit_getaggtem_gastport_ist_ein_leck(self):
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br,ether3 untagged= current-tagged=br,ether3 current-untagged=\n"
+        self.assertEqual(self._befund(self._sammelzeile(tabelle))["status"], "warn")
+
+    def test_sammelzeile_getaggt_mit_nur_untagged_frames_ist_kein_beleg_fuer_ein_leck(self):
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br,ether3 untagged= current-tagged=br,ether3 current-untagged=\n"
+        self.assertEqual(self._befund(self._sammelzeile(tabelle, frames="admit-only-untagged-and-priority-tagged"))["status"], "good")
+
+    def test_sammelzeile_als_trunk_ohne_leck(self):
+        # Die Access-Ports stehen nur ueber ihre PVID in der Zeile, jeder in seinem eigenen VLAN.
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br,ether5 untagged= current-tagged=br,ether5 current-untagged=ether3,ether4\n"
+        self.assertEqual(self._befund(self._sammelzeile(tabelle, lan="vlan10,ether4"))["status"], "good")
+
+    def test_sammelzeile_als_trunk_mit_hausport_im_gastvlan_ist_ein_leck(self):
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br,ether5 untagged= current-tagged=br,ether5 current-untagged=ether3,ether4\n"
+        self.assertEqual(self._befund(self._sammelzeile(tabelle, lan="vlan10,ether4", ether4_pvid="20"))["status"], "warn")
+
+    def test_lesefehler_am_wlan_ist_kein_nein(self):
+        antworten = self._vlan(self.SPERRE)
+        fehler = core.RouterCommandFailed("failure: kein Zugriff")
+        def router(c):
+            if c == "/interface wifi access-list print terse":
+                raise fehler
+            return antworten.get(c, "")
+        with patch.object(core, "router", side_effect=router):
+            self.assertIsNone(core._wlan_setzt_vlan("ether3"))
+
+    def test_fehlendes_wlan_menue_ist_ein_nein(self):
+        antworten = self._vlan(self.SPERRE)
+        def router(c):
+            if "wifi" in c:
+                raise core.RouterCommandFailed("bad command name wifi (line 1 column 12)")
+            return antworten.get(c, "")
+        with patch.object(core, "router", side_effect=router):
+            self.assertIs(core._wlan_setzt_vlan("ether3"), False)
+
+    def test_lesefehler_am_offload_ist_kein_nein(self):
+        antworten = self._vlan(self.SPERRE)
+        def router(c):
+            if c == "/interface ethernet switch print terse":
+                raise core.RouterCommandFailed("failure: kein Zugriff")
+            return antworten.get(c, "")
+        with patch.object(core, "router", side_effect=router):
+            self.assertEqual(core._gast_befund("ether3")["status"], "unknown")
+
+    def test_fehlendes_switch_menue_ist_kein_offload(self):
+        antworten = self._vlan(self.SPERRE)
+        def router(c):
+            if c == "/interface ethernet switch print terse":
+                raise core.RouterCommandFailed("bad command name switch (line 1 column 20)")
+            return antworten.get(c, "")
+        with patch.object(core, "router", side_effect=router):
+            self.assertEqual(core._gast_befund("ether3")["status"], "good")
+
+    def test_unlesbare_wan_adresse_zaehlt_als_privat(self):
+        self.assertEqual(self._befund(self._wan(self.SPERRE, adresse="kaputt"))["status"], "unknown")
+
+    def test_freigabe_ins_private_wan_bleibt_unklar_trotz_deckender_sperre(self):
+        regel = ("0 chain=forward action=accept in-interface=vlan20 out-interface=ether1\n"
+                 "1 chain=forward action=drop in-interface=vlan20 out-interface=!pppoe-out1\n")
+        antworten = self._wan(regel, wan="ether1,pppoe-out1")
+        antworten["/ip address print terse"] += "9 interface=pppoe-out1 address=87.1.2.3/32\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_freigabe_auf_liste_oeffentlich_bleibt_unklar_trotz_vollsperre(self):
+        antworten = self._vlan("0 chain=forward action=accept in-interface=vlan20 out-interface-list=INTERNET\n"
+                               "1 chain=forward action=drop in-interface=vlan20\n")
+        antworten['/interface list member print terse where list="INTERNET"'] = "0 list=INTERNET interface=pppoe-out1\n"
+        antworten["/ip address print terse"] += "8 interface=pppoe-out1 address=87.1.2.3/32\n"
+        antworten["/ipv6 address print terse"] += "8 interface=pppoe-out1 address=2a01::1/64\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_freigabe_auf_lan_liste_bleibt_ein_leck_auch_mit_oeffentlichem_mitglied(self):
+        antworten = self._vlan("0 chain=forward action=accept in-interface=vlan20 out-interface-list=LAN\n" + self.SPERRE, lan="ether9,pppoe-out1")
+        antworten["/ip address print terse"] += "8 interface=pppoe-out1 address=87.1.2.3/32\n"
+        antworten["/ipv6 address print terse"] += "8 interface=pppoe-out1 address=2a01::1/64\n"
+        self.assertEqual(self._befund(antworten)["status"], "warn")
+
+    def test_sammelzeile_fester_hausport_ist_ein_leck_auch_wenn_der_gast_nur_ueber_pvid_dabei_ist(self):
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br untagged=ether4 current-tagged=br current-untagged=ether3,ether4\n"
+        self.assertEqual(self._befund(self._sammelzeile(tabelle))["status"], "warn")
+
+    def test_sammelzeile_abgeschalteter_port_zaehlt_nicht(self):
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br untagged=ether9 current-tagged=br current-untagged=ether3\n"
+        antworten = self._sammelzeile(tabelle)
+        antworten['/interface bridge port print terse where bridge="br"'] += "3 X interface=ether9 bridge=br pvid=10\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_sammelzeile_ohne_lesbare_pvids_ist_unklar(self):
+        tabelle = "0 bridge=br vlan-ids=10,20 tagged=br,ether5 untagged= current-tagged=br,ether5 current-untagged=ether3,ether4\n"
+        antworten = self._sammelzeile(tabelle, lan="vlan10,ether4")
+        with patch.object(core, "_port_pvids", return_value=None), patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertEqual(core._gast_befund("ether3")["status"], "unknown")
+
+    def test_auch_no_such_command_heisst_menue_fehlt(self):
+        self.assertTrue(core._befehl_fehlt(core.RouterCommandFailed("no such command prefix")))
+        self.assertTrue(core._befehl_fehlt(core.RouterCommandFailed("bad command name wifi")))
+        self.assertFalse(core._befehl_fehlt(core.RouterCommandFailed("failure: kein Zugriff")))
+
+    def test_sperre_alles_ausser_hausnetz_belegt_nichts(self):
+        for regel in ("0 chain=forward action=drop in-interface=vlan20 out-interface=!vlan10\n",
+                      "0 chain=forward action=drop in-interface=vlan20 out-interface-list=!LAN\n"):
+            with self.subTest(regel=regel):
+                self.assertEqual(self._befund(self._nicht_wan(regel))["status"], "unknown")
+
+    def test_liste_ueberschneidet_das_hausnetz(self):
+        regel = "0 chain=forward action=drop in-interface=vlan20 out-interface-list=!WAN\n"
+        self.assertEqual(self._befund(self._nicht_wan(regel, lan="vlan10,ether1"))["status"], "unknown")
+
+    def test_sperre_alles_ausser_wan_ohne_hausnetz_belegt_nichts(self):
+        for regel in ("0 chain=forward action=drop in-interface=vlan20 out-interface=!ether1\n",
+                      "0 chain=forward action=drop in-interface=vlan20 out-interface-list=!WAN\n"):
+            with self.subTest(regel=regel):
+                self.assertEqual(self._befund(self._nicht_wan(regel, lan="vlan20"))["status"], "unknown")
+
+    def test_freigabe_alles_ausser_wan_bleibt_unklar(self):
+        for regel in ("0 chain=forward action=accept in-interface=vlan20 out-interface=!ether1\n" + self.SPERRE,
+                      "0 chain=forward action=accept in-interface=vlan20 out-interface-list=!WAN\n" + self.SPERRE):
+            with self.subTest(regel=regel):
+                self.assertEqual(self._befund(self._nicht_wan(regel))["status"], "unknown")
+
+    def test_teilsperre_alles_ausser_wan_belegt_nichts(self):
+        regel = "0 chain=forward action=drop protocol=tcp in-interface=vlan20 out-interface=!ether1\n"
+        self.assertEqual(self._befund(self._nicht_wan(regel))["status"], "unknown")
+
+    # Befunde der beiden Pruefer vom 2026-11-05. Der Wahrheitstest misst dieselben Faelle mit echten Clients.
+
+    INVALID = "0 chain=forward action=drop connection-state=invalid\n"
+    NEU = "1 chain=forward action=drop connection-state=new in-interface=vlan20 out-interface-list=LAN\n"
+
+    def test_lan_ohne_das_geroutete_hausnetz_belegt_nichts(self):
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, lan="br"))["status"], "unknown")
+
+    def test_sperre_alles_ausser_hausnetz_bei_lan_nur_bridge(self):
+        regel = "0 chain=forward action=drop in-interface=vlan20 out-interface=!vlan10\n"
+        self.assertEqual(self._befund(self._vlan(regel, lan="br"))["status"], "unknown")
+        antworten = self._vlan("0 chain=forward action=drop in-interface=vlan20 out-interface-list=!H\n", lan="br")
+        antworten['/interface list member print terse where list="H"'] = "0 list=H interface=vlan10\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_freigabe_auf_liste_ausserhalb_von_lan_ist_ein_leck(self):
+        regeln = "0 chain=forward action=accept in-interface=vlan20 out-interface-list=H\n" + self.SPERRE
+        antworten = self._vlan(regeln, lan="br")
+        antworten['/interface list member print terse where list="H"'] = "0 list=H interface=vlan10\n"
+        self.assertEqual(self._befund(antworten)["status"], "warn")
+
+    def test_zielliste_muss_auch_netze_ausserhalb_von_lan_abdecken(self):
+        regel4 = "0 chain=forward action=drop in-interface=vlan20 dst-address-list=p\n"
+        antworten = self._vlan(regel4, regeln6=self.SPERRE, lan="vlan10")
+        antworten["/ip address print terse"] += "9 interface=vlan30 address=10.3.0.1/24\n"
+        antworten['/ip address print terse where interface="vlan30"'] = "0 interface=vlan30 address=10.3.0.1/24\n"
+        antworten['/ip firewall address-list print terse where list="p" and dynamic=no'] = "0 list=p address=192.168.0.0/16\n"
+        self.assertNotEqual(self._befund(antworten)["status"], "good")
+
+    def test_gast_port_getaggt_in_fremdem_vlan_ist_ein_leck(self):
+        tabelle = ("0 bridge=br vlan-ids=10 current-tagged=br,ether3 current-untagged=ether4\n"
+                   "1 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3\n")
+        befund = self._befund(self._vlan(self.SPERRE, tabelle=tabelle))
+        self.assertEqual(befund["status"], "warn")
+        self.assertEqual(befund["schicht2"]["beleg"], "vlan_geteilt")
+
+    def test_gast_port_in_fremdem_vlan_mit_nur_ungetaggt_ist_dicht(self):
+        tabelle = ("0 bridge=br vlan-ids=10 current-tagged=br,ether3 current-untagged=ether4\n"
+                   "1 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3\n")
+        antworten = self._vlan(self.SPERRE, tabelle=tabelle, frames="admit-only-untagged-and-priority-tagged")
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_vlan_bereich_in_der_tabelle(self):
+        self.assertTrue(core._vlan_id_in("20-30", "25"))
+        self.assertTrue(core._vlan_id_in("10,20-30", "10"))
+        self.assertFalse(core._vlan_id_in("20-30", "31"))
+        self.assertFalse(core._vlan_id_in("10,20", "2"))
+        self.assertTrue(core._vlan_id_in("kaputt", "20"))
+        tabelle = "0 bridge=br vlan-ids=15-25 current-tagged=br current-untagged=ether3,ether4\n"
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, lan="ether4", tabelle=tabelle))["status"], "warn")
+
+    def test_haus_port_im_gast_vlan_ausserhalb_von_lan_ist_unklar(self):
+        # Der Port steht nicht in LAN, das Gast-VLAN aber schon: Es kann das Hausnetz sein.
+        tabelle = "0 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3,ether4\n"
+        befund = self._befund(self._vlan(self.SPERRE, lan="vlan20,vlan10", tabelle=tabelle))
+        self.assertEqual(befund["status"], "unknown")
+
+    def test_zweiter_gast_port_ausserhalb_von_lan_stoert_nicht(self):
+        tabelle = "0 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3,ether5\n"
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, tabelle=tabelle))["status"], "good")
+
+    def _zwei_funkbaender(self, ssid2):
+        tabelle = "0 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3,wifi2\n"
+        antworten = self._vlan(self.SPERRE, lan="br,vlan10,wifi2", tabelle=tabelle)
+        antworten['/interface wifi print terse where name="ether3"'] = "0 name=ether3 configuration.ssid=Gast\n"
+        antworten['/interface wifi print terse where name="wifi2"'] = f"0 name=wifi2 configuration.ssid={ssid2}\n"
+        return antworten
+
+    def test_zweites_funkband_desselben_gastnetzes_ist_kein_hausnetz(self):
+        self.assertEqual(self._befund(self._zwei_funkbaender("Gast"))["status"], "good")
+
+    def test_anderes_wlan_im_gast_vlan_ist_unklar_und_nicht_rot(self):
+        self.assertEqual(self._befund(self._zwei_funkbaender("Haus"))["status"], "unknown")
+
+    def test_wlan_mit_eigenem_vlan_ist_auch_bei_fremder_pvid_nicht_rot(self):
+        for zeile in ("0 name=ether3 datapath.vlan-id=20\n", "0 name=ether3 datapath=dp\n", "0 name=ether3 configuration=cfg\n"):
+            antworten = self._vlan(self.SPERRE, gast_pvid="1", lan="br,vlan10", vlan_ifs=("vlan10", "vlan20"),
+                                   tabelle="0 bridge=br vlan-ids=1 current-untagged=ether3,ether4\n", bridge_pvid="99")
+            antworten['/interface wifi print terse where name="ether3"'] = zeile
+            with self.subTest(zeile=zeile):
+                self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_vlan_je_geraet_oder_passwort_ist_unklar(self):
+        for pfad, zeile in (("/interface wifi access-list", "0 action=accept vlan-id=30\n"),
+                            ("/interface wifi security multi-passphrase", "0 group=g vlan-id=30\n"),
+                            ("/interface wireless access-list", "0 vlan-id=30\n")):
+            antworten = self._vlan(self.SPERRE)
+            antworten[f"{pfad} print terse"] = zeile
+            with self.subTest(pfad=pfad):
+                self.assertEqual(self._befund(antworten)["status"], "unknown")
+        antworten = self._vlan(self.SPERRE)
+        antworten["/interface wifi access-list print terse"] = "0 X action=accept vlan-id=30\n1 action=reject\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_notrack_hebt_regeln_mit_zustand_auf(self):
+        regeln = ("0 chain=forward action=accept connection-state=established,related,untracked\n" + self.INVALID.replace("0 ", "1 ", 1) + self.NEU.replace("1 ", "2 ", 1))
+        self.assertEqual(self._befund(self._vlan(regeln))["status"], "good")
+        for pfad in ("/ip firewall raw print terse", "/ipv6 firewall raw print terse"):
+            antworten = self._vlan(regeln)
+            antworten[pfad] = "0 chain=prerouting action=notrack in-interface=vlan20\n"
+            with self.subTest(pfad=pfad):
+                self.assertEqual(self._befund(antworten)["status"], "unknown")
+        antworten = self._vlan(regeln)
+        antworten["/ip firewall raw print terse"] = "0 X chain=prerouting action=notrack in-interface=vlan20\n1 chain=prerouting action=drop\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_ohne_connection_tracking_gilt_kein_zustand(self):
+        antworten = self._vlan(self.INVALID + self.NEU)
+        antworten["/ip firewall connection tracking print"] = "  enabled: no\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+        antworten["/ip firewall connection tracking print"] = "  enabled: auto\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_unlesbarer_tracking_stand_gilt_als_unzuverlaessig(self):
+        for ziel in ("/ip firewall connection tracking print", "/ip firewall raw print terse"):
+            with self._router(self._vlan(self.INVALID + self.NEU), fehler=(ziel,)), self.subTest(ziel=ziel):
+                self.assertNotEqual(core._gast_befund("ether3")["status"], "good")
+
+    def test_sperre_nur_fuer_new_braucht_die_sperre_fuer_invalid(self):
+        self.assertEqual(self._befund(self._vlan(self.NEU))["status"], "unknown")
+        schlusssperre = self.NEU + "2 chain=forward action=drop\n"
+        self.assertEqual(self._befund(self._vlan(schlusssperre))["status"], "good")
+        teil = "0 chain=forward action=drop connection-state=invalid protocol=tcp\n" + self.NEU
+        self.assertEqual(self._befund(self._vlan(teil))["status"], "unknown")
+
+    def test_freigabe_mit_in_interface_all(self):
+        regeln = "0 chain=forward action=accept in-interface=all-vlan out-interface-list=LAN\n" + self.SPERRE
+        self.assertEqual(self._befund(self._vlan(regeln))["status"], "unknown")
+        regeln = "0 chain=forward action=drop in-interface=all-vlan out-interface-list=LAN\n" + self.SPERRE
+        self.assertEqual(self._befund(self._vlan(regeln))["status"], "good")
+
+    def _standardfirewall(self):
+        v4 = ("0 chain=forward action=accept ipsec-policy=in,ipsec\n1 chain=forward action=accept ipsec-policy=out,ipsec\n"
+              "2 chain=forward action=accept connection-state=established,related,untracked\n3 chain=forward action=drop connection-state=invalid\n"
+              "4 chain=forward action=drop connection-state=new connection-nat-state=!dstnat in-interface-list=WAN\n"
+              "5 chain=forward action=drop in-interface=vlan20 out-interface-list=LAN\n")
+        v6 = ("0 chain=forward action=accept connection-state=established,related,untracked\n1 chain=forward action=drop connection-state=invalid\n"
+              "2 chain=forward action=drop src-address-list=no_forward_ipv6\n3 chain=forward action=drop dst-address-list=no_forward_ipv6\n"
+              "4 chain=forward action=drop in-interface=vlan20 out-interface-list=LAN\n5 chain=forward action=accept protocol=icmpv6\n"
+              "6 chain=forward action=drop in-interface-list=!LAN\n")
+        antworten = self._vlan(v4, regeln6=v6)
+        antworten['/interface list member print terse where list="WAN"'] = "0 list=WAN interface=ether1\n"
+        antworten["/ip ipsec policy print terse"] = "0 T* group=default src-address=::/0 dst-address=::/0 template=yes\n"
+        return antworten
+
+    def test_standardfirewall_mit_gast_sperre_ist_gruen(self):
+        self.assertEqual(self._befund(self._standardfirewall())["status"], "good")
+
+    def test_echte_ipsec_policy_laesst_die_freigabe_stehen(self):
+        antworten = self._standardfirewall()
+        antworten["/ip ipsec policy print terse"] += "1 src-address=192.168.20.0/24 dst-address=10.0.0.0/8\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+        with self._router(self._standardfirewall(), fehler=("/ip ipsec policy print terse",)):
+            self.assertEqual(core._gast_befund("ether3")["status"], "unknown")
+
+    def test_ipsec_mit_weiterer_bedingung_bleibt_unklar(self):
+        antworten = self._standardfirewall()
+        antworten[self.FW4] = "0 chain=forward action=accept ipsec-policy=in,ipsec protocol=tcp\n" + self.SPERRE
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def _internet_freigabe(self, regel):
+        antworten = self._vlan(regel + self.SPERRE)
+        antworten['/interface list member print terse where list="WAN"'] = "0 list=WAN interface=ether1\n"
+        return antworten
+
+    def test_internet_freigabe_vor_der_sperre_ist_kein_zweifel(self):
+        for regel in ("0 chain=forward action=accept in-interface=vlan20 out-interface=ether1\n",
+                      "0 chain=forward action=accept in-interface=vlan20 out-interface-list=WAN\n"):
+            with self.subTest(regel=regel):
+                self.assertEqual(self._befund(self._internet_freigabe(regel))["status"], "good")
+
+    def test_freigabe_direkt_ins_hausnetz_ist_ein_leck(self):
+        regel = "0 chain=forward action=accept in-interface=vlan20 out-interface=vlan10\n"
+        self.assertEqual(self._befund(self._internet_freigabe(regel))["status"], "warn")
+
+    def test_freigabe_mit_weiterer_bedingung_ins_hausnetz_bleibt_unklar(self):
+        regel = "0 chain=forward action=accept protocol=udp dst-port=53 in-interface=vlan20 out-interface=vlan10\n"
+        self.assertEqual(self._befund(self._internet_freigabe(regel))["status"], "unknown")
+
+    def test_freigabe_auf_unbekanntes_interface_bleibt_unklar(self):
+        regel = "0 chain=forward action=accept in-interface=vlan20 out-interface=ether7\n"
+        self.assertEqual(self._befund(self._internet_freigabe(regel))["status"], "unknown")
+
+    def test_reject_wirkt_wie_drop(self):
+        for regel in ("0 chain=forward action=reject in-interface=vlan20 out-interface-list=LAN\n",
+                      "0 chain=forward action=reject reject-with=icmp-admin-prohibited in-interface=vlan20 out-interface-list=LAN\n"):
+            with self.subTest(regel=regel):
+                self.assertEqual(self._befund(self._vlan(regel))["status"], "good")
+
+    def _faelschbar(self, rp_filter, absender="192.168.30.0/24"):
+        regeln = f"0 chain=forward action=accept src-address={absender}\n" + self.SPERRE
+        antworten = self._vlan(regeln, regeln6=self.SPERRE)
+        antworten["/ip settings print"] = f"  rp-filter: {rp_filter}\n"
+        return antworten
+
+    def test_freigabe_fuer_fremde_absender_nur_mit_strict_egal(self):
+        self.assertEqual(self._befund(self._faelschbar("strict"))["status"], "good")
+        self.assertEqual(self._befund(self._faelschbar("loose"))["status"], "unknown")
+        self.assertEqual(self._befund(self._faelschbar("no"))["status"], "unknown")
+
+    def test_freigabe_fuer_das_gastnetz_selbst_bleibt_auch_mit_strict(self):
+        for absender in ("192.168.20.0/24", "192.168.0.0/16", "192.168.20.5"):
+            with self.subTest(absender=absender):
+                self.assertNotEqual(self._befund(self._faelschbar("strict", absender))["status"], "good")
+
+    def test_unlesbarer_absender_oder_unlesbare_einstellung_bleibt_unklar(self):
+        self.assertEqual(self._befund(self._faelschbar("strict", "!192.168.30.0/24"))["status"], "unknown")
+        self.assertEqual(self._befund(self._faelschbar("strict", "10.0.0.1-10.0.0.5"))["status"], "unknown")
+        with self._router(self._faelschbar("strict"), fehler=("/ip settings print",)):
+            self.assertEqual(core._gast_befund("ether3")["status"], "unknown")
+
+    def test_strict_gilt_nicht_fuer_ipv6(self):
+        regeln6 = "0 chain=forward action=accept src-address=fd00:30::/64\n" + self.SPERRE
+        antworten = self._vlan(self.SPERRE, regeln6=regeln6)
+        antworten["/ip settings print"] = "  rp-filter: strict\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_hw_port_kein_beleg_durch_bridge_filter(self):
+        antworten = self._flach("0 chain=forward action=drop in-interface=br out-interface-list=LAN\n", filter_regeln=self.FILTER)
+        self.assertEqual(self._befund(antworten)["status"], "good")
+        antworten['/interface bridge port print terse where interface="ether3"'] = "0 H interface=ether3 bridge=br pvid=1 hw=yes\n"
+        befund = self._befund(antworten)
+        self.assertEqual(befund["status"], "warn")
+        self.assertEqual(befund["schicht2"]["beleg"], "bypass")
+
+    def test_hw_port_kein_beleg_durch_use_ip_firewall(self):
+        antworten = self._flach()
+        antworten["/interface bridge settings print"] = "  use-ip-firewall: yes\n"
+        with self._router(antworten):
+            self.assertIs(core._guest_bridge_bypass("ether3"), False)
+        antworten['/interface bridge port print terse where interface="ether3"'] = "0 H interface=ether3 bridge=br pvid=1 hw=yes\n"
+        with self._router(antworten):
+            self.assertIsNone(core._guest_bridge_bypass("ether3"))
+
+    def test_hw_yes_ohne_flag_ist_kein_offload(self):
+        # Am CHR und am hAP ax2 gelesen: hw=yes ohne H. Am CHR fuehrte das Feld als Merkmal zu falschem Rot.
+        antworten = self._flach("0 chain=forward action=drop in-interface=br out-interface-list=LAN\n", filter_regeln=self.FILTER)
+        antworten['/interface bridge port print terse where interface="ether3"'] = "0 interface=ether3 bridge=br pvid=1 hw=yes\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+        with self._router({'/interface bridge port print terse where interface="p"': "0 IH interface=p hw=yes\n"}):
+            self.assertIs(core._port_im_switch_chip("p"), True)
+
+    def test_hw_lesefehler_ist_nicht_nein(self):
+        with self._router({}, fehler=('/interface bridge port print terse where interface="ether3"',)):
+            self.assertIsNone(core._port_im_switch_chip("ether3"))
+
+    def test_l3_hardware_offload_ist_unklar(self):
+        antworten = self._vlan(self.SPERRE)
+        antworten["/interface ethernet switch print terse"] = "0 name=switch1 type=Marvell-98DX3236 l3-hw-offloading=yes\n"
+        befund = self._befund(antworten)
+        self.assertEqual(befund["status"], "unknown")
+        self.assertIsNone(befund["v4"])
+        antworten["/interface ethernet switch print terse"] = "0 name=switch1 type=IPQ-PPE l3-hw-offloading=no\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_l3_abfrage_unerreichbar_und_ohne_switch(self):
+        def stub(c):
+            if c == "/interface ethernet switch print terse":
+                raise core.RouterUnreachable("weg")
+            return ""
+        with patch.object(core, "router", side_effect=stub):
+            self.assertIsNone(core._gast_layer3("ether3", {"bridge": None, "eigener_eingang": True}, self.FW4))
+
+    def test_ipv6_lesefehler_ist_nicht_keine_adresse(self):
+        with self._router({}, fehler=('/ipv6 address print terse where interface="x"',)):
+            self.assertIsNone(core._hat_routbare_adresse("x", self.FW6))
+
+    def test_fehlendes_ipv6_paket_ist_keine_adresse(self):
+        def stub(c):
+            raise core.RouterCommandFailed("bad command name address")
+        with patch.object(core, "router", side_effect=stub):
+            self.assertIs(core._hat_routbare_adresse("x", self.FW6), False)
+
+    def test_gast_ohne_ipv6_adresse_routet_ueber_link_local(self):
+        # Im Labor gemessen, Szenario fe80-gateway: Ohne Adresse im Gastnetz bleibt der Weg offen.
+        antworten = self._vlan(self.SPERRE, regeln6="", v6=("vlan10",))
+        befund = self._befund(antworten)
+        self.assertIsNone(befund["v6"])
+        self.assertEqual(befund["status"], "unknown")
+        self.assertEqual(self._befund(self._vlan(self.SPERRE, v6=("vlan10",)))["status"], "good")
+
+    def test_ohne_anderes_ipv6_netz_gibt_es_nichts_zu_routen(self):
+        antworten = self._vlan(self.SPERRE, regeln6="", v6=("vlan20",))
+        befund = self._befund(antworten)
+        self.assertEqual(befund["v6"], "keine_adresse")
+        self.assertEqual(befund["status"], "good")
+        antworten = self._vlan(self.SPERRE, regeln6="", v6=())
+        self.assertEqual(self._befund(antworten)["v6"], "keine_adresse")
+
+    def test_geroutete_ziele(self):
+        antworten = {"/ip address print terse": ("0 interface=vlan10 address=192.168.10.1/24\n1 interface=ether1 address=203.0.113.2/24\n"
+                                                 "2 X interface=vlan40 address=10.4.0.1/24\n3 interface=vlan20 address=192.168.20.1/24\n"),
+                     '/interface list member print terse where list="WAN"': "0 list=WAN interface=ether1\n",
+                     "/ipv6 address print terse": "0 DL interface=vlan10 address=fe80::1/64\n1 D interface=lo address=::1/128\n"}
+        with self._router(antworten):
+            self.assertEqual(core._geroutete_ziele(self.FW4, {"vlan20"}), {"vlan10"})
+            self.assertEqual(core._geroutete_ziele(self.FW6, {"vlan20"}), set())
+        with self._router({"/ip address print terse": "keine Zeile im erwarteten Format\n"}):
+            self.assertIsNone(core._geroutete_ziele(self.FW4, {"vlan20"}))
+        with self._router({}, fehler=("/ip address print terse",)):
+            self.assertIsNone(core._geroutete_ziele(self.FW4, {"vlan20"}))
+
+    def test_check_router_woanders_nur_bei_belegter_trennung(self):
+        befund = {"status": "unknown", "schicht2": {"getrennt": None, "beleg": "vlan_unklar"}, "v4": "extern", "v6": "extern", "ipv6_an": True}
+        with patch.object(core, "current_conn", return_value={"guest_interface": "ether3"}), patch.object(core, "_gast_befund", return_value=befund):
+            ergebnis = routes_basis._security_check_guest_isolation()
+        self.assertNotIn("getrennt. Geroutet", ergebnis["plain"])
+
+    def test_gruener_text_verspricht_nichts_zum_router_selbst(self):
+        self.assertIn("Verwaltung des Routers", self._check("good", v4=True, v6=True)["plain"])
+
+    def test_abgeschaltete_zeilen_zaehlen_nicht(self):
+        with self._router({'/interface bridge port print terse where interface="p"': "0 XH interface=p hw=yes\n1 interface=p hw=yes\n"}):
+            self.assertIs(core._port_im_switch_chip("p"), False)
+        with self._router({'/interface vlan print terse where interface="br"': "0 X name=vlan20 interface=br vlan-id=20\n"}):
+            self.assertIs(core._vlan_interface_in_lan("br", "20", {"vlan20"}), False)
+        with self._router({"/ip ipsec policy print terse": "0 template=yes\n1 X src-address=10.0.0.0/8\n"}):
+            self.assertIs(core._keine_ipsec_policy(), True)
+        with self._router({"/ip settings print": "  rp-filter: strict\n",
+                           '/ip address print terse where interface="x"': "0 X interface=x address=192.168.30.1/24\n1 interface=x address=192.168.20.1/24\n"}):
+            self.assertIs(core._absender_schliesst_gast_aus({"src-address": "192.168.30.0/24"}, {"x"}, "/ip firewall filter"), True)
+        antworten = self._vlan(self.SPERRE)
+        antworten['/interface bridge port print terse where interface="ether3"'] = (
+            "0 X interface=ether3 bridge=br pvid=30 ingress-filtering=no frame-types=admit-all\n"
+            "1 interface=ether3 bridge=br pvid=20 ingress-filtering=yes frame-types=admit-all\n")
+        with self._router(antworten):
+            self.assertIs(core._vlan_isolation("ether3", "br"), True)
+        antworten = self._vlan(self.SPERRE)
+        antworten["/interface ethernet switch print terse"] = "0 X name=switch1 l3-hw-offloading=yes\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_abgeschaltetes_listenmitglied_macht_die_freigabe_nicht_zum_leck(self):
+        regeln = "0 chain=forward action=accept in-interface=vlan20 out-interface-list=H\n" + self.SPERRE
+        antworten = self._vlan(regeln)
+        antworten['/interface list member print terse where list="H"'] = "0 X list=H interface=vlan10\n1 list=H interface=vlan40\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_wlan_abfragen_im_einzelnen(self):
+        for zeile in ("0 name=g configuration=cfg\n", "0 name=g datapath=dp\n", "0 name=g datapath.vlan-id=30\n"):
+            with self._router({'/interface wifi print terse where name="g"': zeile}), self.subTest(zeile=zeile):
+                self.assertIs(core._wlan_setzt_vlan("g"), True)
+        with self._router({'/interface wireless print terse where name="g"': "0 name=g vlan-mode=use-tag\n"}):
+            self.assertIs(core._wlan_setzt_vlan("g"), True)
+        with self._router({'/interface wifi print terse where name="g"': "0 name=g configuration.ssid=Gast\n"}):
+            self.assertIs(core._wlan_setzt_vlan("g"), False)
+
+    def test_wlan_unerreichbar_ist_unklar(self):
+        for ziel in ('/interface wifi print terse where name="g"', "/interface wifi access-list print terse"):
+            def stub(c, ziel=ziel):
+                if c == ziel:
+                    raise core.RouterUnreachable("weg")
+                return ""
+            with patch.object(core, "router", side_effect=stub), self.subTest(ziel=ziel):
+                self.assertIsNone(core._wlan_setzt_vlan("g"))
+
+    def test_eigenes_wlan_vlan_sperrt_beide_auswertungen(self):
+        antworten = self._vlan(self.SPERRE)
+        antworten['/interface wifi print terse where name="ether3"'] = "0 name=ether3 datapath.vlan-id=30\n"
+        with self._router(antworten):
+            self.assertIsNone(core._vlan_isolation("ether3", "br"))
+            self.assertIsNone(core._gast_eingang("ether3"))
+
+    def test_zwei_wlans_ohne_sichtbare_ssid_sind_nicht_dasselbe(self):
+        antworten = self._zwei_funkbaender("Gast")
+        antworten['/interface wifi print terse where name="ether3"'] = "0 name=ether3\n"
+        antworten['/interface wifi print terse where name="wifi2"'] = "0 name=wifi2\n"
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_eingang_ohne_adresse_ist_kein_beleg_fuer_fremden_absender(self):
+        with self._router({"/ip settings print": "  rp-filter: strict\n"}):
+            self.assertIs(core._absender_schliesst_gast_aus({"src-address": "10.0.0.0/8"}, {"x"}, "/ip firewall filter"), False)
+
+    def test_unlesbare_adressen_sind_kein_beleg(self):
+        with self._router(self._vlan(self.SPERRE), fehler=("/ip address print terse",)):
+            befund = core._gast_befund("ether3")
+        self.assertIsNone(befund["v4"])
+        self.assertEqual(befund["status"], "unknown")
+        with self._router(self._vlan(self.SPERRE), fehler=("/ipv6 address print terse",)):
+            befund = core._gast_befund("ether3")
+        self.assertIsNone(befund["v6"])
+        self.assertEqual(befund["status"], "unknown")
+
+    def test_unklare_sperren_sind_kein_grund_aufzugeben(self):
+        for vorab in ("0 chain=forward action=drop in-interface-list=D out-interface-list=LAN\n",
+                      "0 chain=forward action=drop in-interface=!ether7 out-interface-list=LAN\n",
+                      "0 chain=forward action=drop in-interface=vlan20 src-address-list=d\n",
+                      "0 chain=forward action=drop in-interface=vlan20 dst-address-list=d\n"):
+            antworten = self._vlan(vorab + self.SPERRE, regeln6=self.SPERRE)
+            antworten['/interface list member print terse where list="D"'] = "0 D list=D interface=vlan20\n"
+            antworten['/ip firewall address-list print terse where list="d" and dynamic=yes'] = "0 D list=d address=10.0.0.1\n"
+            with self.subTest(vorab=vorab):
+                self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_ohne_tracking_zaehlt_eine_sperre_ohne_zustand(self):
+        antworten = self._vlan(self.INVALID + self.SPERRE.replace("0 ", "1 ", 1))
+        antworten["/ip firewall connection tracking print"] = "  enabled: no\n"
+        self.assertEqual(self._befund(antworten)["status"], "good")
+
+    def test_freigabe_auf_einzelne_interfaces(self):
+        regel = "0 chain=forward action=accept in-interface=vlan20 out-interface=%s\n"
+        # LAN-Mitglied ohne Adresse
+        antworten = self._vlan(regel % "ether9" + self.SPERRE, lan="vlan10,ether9")
+        self.assertEqual(self._befund(antworten)["status"], "warn")
+        # Geroutetes Netz ausserhalb von LAN
+        antworten = self._vlan(regel % "vlan10" + self.SPERRE, lan="br")
+        self.assertEqual(self._befund(antworten)["status"], "warn")
+        # Bridge-Port: Eine Regel auf einen Port trifft im Routing nie, ein Leck ist das nicht belegt.
+        antworten = self._vlan(regel % "ether4" + self.SPERRE, lan="vlan10,ether4")
+        self.assertEqual(self._befund(antworten)["status"], "unknown")
+
+    def test_geteiltes_vlan_mit_filter_am_hw_port_bleibt_ein_leck(self):
+        tabelle = "0 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3,ether4\n"
+        antworten = self._vlan(self.SPERRE, lan="ether4,vlan10", tabelle=tabelle)
+        antworten["/interface bridge filter print terse where chain=forward"] = "0 chain=forward action=drop in-interface=ether3 out-interface=ether4\n"
+        antworten['/interface bridge port print terse where interface="ether3"'] = (
+            "0 H interface=ether3 bridge=br pvid=20 ingress-filtering=yes frame-types=admit-all hw=yes\n")
+        befund = self._befund(antworten)
+        self.assertEqual(befund["schicht2"]["beleg"], "vlan_geteilt")
+        self.assertEqual(befund["status"], "warn")
+
+    def test_l3_offload_nicht_lesbar_ist_kein_beleg(self):
+        antworten = self._vlan(self.SPERRE)
+        def stub(c):
+            if c == "/interface ethernet switch print terse":
+                raise core.RouterUnreachable("weg")
+            return antworten.get(c, "")
+        with patch.object(core, "router", side_effect=stub):
+            self.assertIsNone(core._gast_layer3("ether3", {"bridge": "br", "eigener_eingang": True}, "/ip firewall filter"))
+        with self._router(antworten):
+            self.assertIs(core._gast_layer3("ether3", {"bridge": "br", "eigener_eingang": True}, "/ip firewall filter"), True)
+
+    def test_sperre_alles_ausser_lan_mitglied_ohne_adresse_belegt_nichts(self):
+        regel = "0 chain=forward action=drop in-interface=vlan20 out-interface=!ether9\n"
+        self.assertEqual(self._befund(self._vlan(regel, lan="vlan10,ether9"))["status"], "unknown")
+
+    def test_ipv6_kandidaten_unlesbar(self):
+        with self._router({}), patch.object(core, "_gast_eingang", side_effect=[set(), None]):
+            self.assertIsNone(core._gast_layer3("ether3", {"bridge": "br", "eigener_eingang": True}, self.FW6))
+
+    # Die folgenden Tests schliessen Luecken, die die Gegenprobe am 2026-11-05 gezeigt hat.
+
+    def _router(self, antworten, fehler=()):
+        def stub(command):
+            if command in fehler:
+                raise core.RouterCommandFailed("failure")
+            return antworten.get(command, "")
+        return patch.object(core, "router", side_effect=stub)
+
+    def test_abgeschaltetes_vlan_interface_macht_keinen_bypass(self):
+        antworten = {
+            '/interface bridge port print terse where interface="ether3"': "0 interface=ether3 bridge=br\n",
+            '/interface bridge port print terse where bridge="br"': "0 interface=ether3 bridge=br\n",
+            '/interface bridge print terse where name="br"': "0 name=br vlan-filtering=no\n",
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=vlan10\n",
+            '/interface vlan print terse where interface="br"': "0 X name=vlan10 interface=br vlan-id=10\n",
+            "/interface bridge settings print": "  use-ip-firewall: no\n",
+        }
+        with self._router(antworten):
+            self.assertIs(core._guest_bridge_bypass("ether3"), False)
+
+    def test_vlan_mitglieder_ohne_abgeschaltete_zeilen_und_ohne_bridge(self):
+        antworten = self._vlan(tabelle="0 X bridge=br vlan-ids=20 tagged=ether5\n"
+                                       "1 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3\n")
+        with self._router(antworten):
+            self.assertEqual(core._gast_vlan_mitglieder("ether3", "br", "20"), set())
+
+    def test_abgeschaltete_portzeile_bestimmt_weder_eingang_noch_weg(self):
+        antworten = self._vlan(tabelle="0 bridge=br vlan-ids=10 tagged=ether5\n1 bridge=br vlan-ids=20 current-untagged=ether3\n")
+        antworten['/interface bridge port print terse where interface="ether3"'] = (
+            "0 X interface=ether3 bridge=br pvid=10\n1 interface=ether3 bridge=br pvid=20 ingress-filtering=yes\n")
+        with self._router(antworten):
+            self.assertEqual(core._gast_eingang("ether3"), {"vlan20"})
+            self.assertIs(core._gast_hat_weiteren_weg("ether3", "br"), False)
+
+    def test_abgeschaltetes_vlan_interface_ist_kein_eingang(self):
+        antworten = self._vlan()
+        antworten['/interface vlan print terse where interface="br"'] = "0 X name=vlan20 interface=br vlan-id=20\n"
+        with self._router(antworten):
+            self.assertEqual(core._gast_eingang("ether3"), set())
+
+    def test_bridge_mit_adresse_ist_bei_anderer_pvid_kein_eingang(self):
+        antworten = self._vlan()
+        antworten['/ip address print terse where interface="br"'] = "0 interface=br address=192.168.99.1/24\n"
+        with self._router(antworten):
+            self.assertEqual(core._gast_eingang("ether3"), {"vlan20"})
+
+    def test_lan_nur_aus_ausnahmen_deckt_keine_liste(self):
+        antworten = {'/interface list member print terse where list="LAN"': "0 list=LAN interface=ether4\n",
+                     '/interface list member print terse where list="x"': "0 list=x interface=ether4\n"}
+        with self._router(antworten):
+            self.assertIsNone(core._interface_list_covers_lan("x", {"ether4"}))
+
+    def test_zielliste_muss_das_gastnetz_nicht_abdecken(self):
+        antworten = self._vlan(lan="vlan10,vlan20")
+        antworten['/ip firewall address-list print terse where list="h" and dynamic=no'] = "0 list=h address=192.168.10.0/24\n"
+        with self._router(antworten):
+            self.assertIs(core._address_list_covers_interface("h", "LAN", {"vlan20"}), True)
+            self.assertIsNone(core._address_list_covers_interface("h", "LAN"))
+
+    def test_unlesbare_adresszeile_eines_lan_mitglieds_belegt_nichts(self):
+        antworten = self._vlan(lan="vlan10,vlan20")
+        antworten['/ip firewall address-list print terse where list="h" and dynamic=no'] = "0 list=h address=192.168.10.0/24\n"
+        antworten['/ip address print terse where interface="vlan20"'] = "keine Zeile im erwarteten Format\n"
+        with self._router(antworten):
+            self.assertIsNone(core._address_list_covers_interface("h", "LAN"))
+
+    def test_bridge_in_lan_mit_gleicher_pvid_ist_kein_eigenes_vlan(self):
+        antworten = self._vlan(lan="br,vlan10", gast_pvid="1", tabelle="0 bridge=br vlan-ids=1 current-untagged=ether3\n")
+        with self._router(antworten):
+            self.assertIs(core._vlan_isolation("ether3", "br"), False)
+
+    def test_konfigurierter_ungetaggter_lan_port_zaehlt_auch_ohne_current(self):
+        antworten = self._vlan(lan="ether4", tabelle="0 bridge=br vlan-ids=20 current-tagged=br current-untagged=ether3 tagged=br untagged=ether4\n")
+        with self._router(antworten):
+            self.assertIs(core._vlan_isolation("ether3", "br"), False)
+
+    def test_quellliste_muss_jeden_eingang_abdecken(self):
+        regel = "0 chain=forward action=drop out-interface-list=LAN src-address-list=g\n"
+        antworten = {self.FW4: regel, '/interface list member print terse where list="LAN"': "0 list=LAN interface=vlan10\n"}
+        with self._router(antworten), patch.object(core, "_gast_eingang", return_value={"a", "b"}), \
+                patch.object(core, "_address_list_covers_interface", side_effect=lambda liste, name, *rest: name == "a"):
+            self.assertIsNone(core._guest_isolation("ether3"))
+
+    def test_unlesbare_bridge_ist_auf_layer_2_unklar(self):
+        with self._router({}, fehler=('/interface bridge port print terse where interface="ether3"',)):
+            schicht2 = core._gast_layer2("ether3")
+        self.assertIsNone(schicht2["getrennt"])
+        self.assertEqual(schicht2["beleg"], "unlesbar")
+
+    def test_unlesbare_bridge_einstellung_ist_auf_layer_2_unklar(self):
+        antworten = self._flach()
+        with self._router(antworten, fehler=("/interface bridge settings print",)):
+            schicht2 = core._gast_layer2("ether3")
+        self.assertIsNone(schicht2["getrennt"])
+        self.assertEqual(schicht2["beleg"], "unlesbar")
+
+    def test_unlesbare_vlan_tabelle_ist_ein_weiterer_weg(self):
+        antworten = self._vlan()
+        with self._router(antworten, fehler=('/interface bridge vlan print terse where bridge="br"',)):
+            self.assertIs(core._gast_hat_weiteren_weg("ether3", "br"), True)
+
+    def test_ohne_bekannte_bridge_ist_es_keine_insel(self):
+        with self._router({}), patch.object(core, "_gast_eingang", return_value=set()):
+            self.assertEqual(core._gast_layer3("ether3", {"bridge": None, "eigener_eingang": True}, self.FW4), "extern")
+
+    def test_unklarer_ipv6_status_ist_nicht_gruen(self):
+        with self._router(self._vlan(self.SPERRE), fehler=("/ipv6 settings print",)):
+            befund = core._gast_befund("ether3")
+        self.assertIsNone(befund["ipv6_an"])
+        self.assertIsNone(befund["v6"])
+        self.assertEqual(befund["status"], "unknown")
+
+    def _check(self, status, beleg="vlan", v4=None, v6=None, fehler=None):
+        befund = {"status": status, "schicht2": {"getrennt": True, "beleg": beleg}, "v4": v4, "v6": v6, "ipv6_an": True}
+        with patch.object(core, "current_conn", return_value={"guest_interface": "ether3"}), \
+                patch.object(core, "_gast_befund", return_value=befund, side_effect=fehler):
+            return routes_basis._security_check_guest_isolation()
+
+    def test_check_geteiltes_vlan_nennt_die_fehlende_trennung(self):
+        self.assertIn("NICHT sauber getrennt", self._check("warn", beleg="vlan_geteilt")["plain"])
+
+    def test_check_nennt_den_router_davor(self):
+        befund = {"status": "unknown", "schicht2": {"getrennt": True, "beleg": "vlan"}, "v4": None, "v6": True, "ipv6_an": True, "hinter_router": True}
+        with patch.object(core, "current_conn", return_value={"guest_interface": "ether3"}), patch.object(core, "_gast_befund", return_value=befund):
+            self.assertIn("hinter einem anderen Router", routes_basis._security_check_guest_isolation()["detail"])
+        befund["status"] = "good"
+        with patch.object(core, "current_conn", return_value={"guest_interface": "ether3"}), patch.object(core, "_gast_befund", return_value=befund):
+            self.assertNotIn("hinter einem anderen Router", routes_basis._security_check_guest_isolation()["detail"])
+
+    def test_check_zeitueberschreitung_ist_unklar(self):
+        ergebnis = self._check("good", fehler=RouterTimeout("zu langsam"))
+        self.assertEqual(ergebnis["status"], "unknown")
+
+    def test_check_router_woanders(self):
+        ergebnis = self._check("unknown", v4="extern", v6="extern")
+        self.assertIn("Geroutet wird auf einem anderen Gerät", ergebnis["detail"])
+        self.assertIn("Prüfe dort", ergebnis["plain"])
+
+    def test_check_leck_bleibt_ein_leck_auch_wenn_ipv4_woanders_laeuft(self):
+        ergebnis = self._check("warn", v4="extern", v6=False)
+        self.assertEqual(ergebnis["status"], "warn")
+        self.assertIn("können aktuell ins Hausnetz", ergebnis["plain"])
+
+    def test_check_lesefehler_ist_unklar(self):
+        ergebnis = self._check("good", fehler=core.RouterCommandFailed("failure"))
+        self.assertEqual(ergebnis["status"], "unknown")

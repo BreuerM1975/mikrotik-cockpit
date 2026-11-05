@@ -1376,105 +1376,94 @@ def _security_check_guest_isolation() -> dict:
                 "plain": "Für diese Sitzung ist kein Gastnetz ausgewählt - die Trennung zum "
                          "Hausnetz wurde nicht geprüft."}
 
+    # 2026-11-05: Vorher ergab ein VLAN- oder Bridge-Filter-Nachweis sofort "good", ohne die
+    # Forward-Kette zu lesen. Am CHR mit echten Clients gemessen: Der Router routet zwischen den VLANs,
+    # und der Gast erreicht das Hausnetz. Die Bewertung steht jetzt in core._gast_befund().
     try:
-        bridge_bypass = core._guest_bridge_bypass(interface)
-    except (RouterCommandFailed, RouterUnreachable):
-        bridge_bypass = None
-
-    if bridge_bypass is True:
-        bridge_name = None
-        try:
-            bridge_name = core._bridge_port_of(interface)
-        except (RouterCommandFailed, RouterUnreachable):
-            bridge_name = None
-        filter_confirmed = vlan_confirmed = None
-        if bridge_name:
-            try:
-                filter_confirmed = core._bridge_filter_isolation(interface, bridge_name)
-            except (RouterCommandFailed, RouterUnreachable):
-                filter_confirmed = None
-            try:
-                vlan_confirmed = core._vlan_isolation(interface, bridge_name)
-            except (RouterCommandFailed, RouterUnreachable):
-                vlan_confirmed = None
-        if filter_confirmed is True or vlan_confirmed is True:
-            proofs = []
-            if filter_confirmed is True:
-                proofs.append("eine aktive Bridge-Firewall-Filter-Regel (chain=forward) sperrt "
-                               "den Verkehr zum Hausnetz")
-            if vlan_confirmed is True:
-                proofs.append("eine VLAN-Trennung hält das Gastnetz auf Layer 2 vom Hausnetz fern")
-            return {"id": "guest_isolation", "label": "Gastnetz-Isolation", "status": "good",
-                    "detail": ("Gastnetz und Hausnetz liegen auf derselben Bridge, "
-                               "'use-ip-firewall' ist nicht aktiv, aber " + " und ".join(proofs)
-                               + "."),
-                    "plain": "Das Gastnetz ist vom Hausnetz getrennt. Auch wenn beide "
-                             "technisch auf demselben Netzwerksegment liegen, verhindert eine "
-                             "zusätzliche Regel den Zugriff aufs Hausnetz - kein "
-                             "Handlungsbedarf."}
-        return {"id": "guest_isolation", "label": "Gastnetz-Isolation", "status": "warn",
-                "detail": ("Gastnetz und Hausnetz liegen auf derselben Bridge, 'use-ip-firewall' "
-                           "ist nicht aktiv -- die IP-Firewall greift für diesen Verkehr gar "
-                           "nicht, unabhängig von vorhandenen Regeln. Weder ein Bridge-Firewall-"
-                           "Filter noch eine VLAN-Trennung konnten die Isolation nachweisen."),
-                "plain": "Gastnetz und Hausnetz sind aktuell NICHT sauber getrennt - Geräte im "
-                         "Gastnetz können möglicherweise auf dein Hausnetz zugreifen. Richte "
-                         "eine Bridge-Firewall-Regel oder eine VLAN-Trennung für das "
-                         "Gastnetz-Interface ein, oder trenne Gast- und Hausnetz auf "
-                         "getrennte Netzwerkkarten/Bridges."}
-
-    try:
-        isolated_v4 = core._guest_isolation(interface)
-    except (RouterCommandFailed, RouterUnreachable):
+        befund = core._gast_befund(interface)
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
         return {"id": "guest_isolation", "label": "Gastnetz-Isolation", "status": "unknown",
                 "detail": "Firewall-Regeln konnten nicht gelesen werden.",
                 "plain": "Die Gastnetz-Isolation konnte nicht geprüft werden, weil die "
                          "Firewall-Regeln nicht gelesen werden konnten."}
-    status_v4 = _isolation_status_label(isolated_v4)
-    detail_parts = [{
-        "good": "IPv4: aktive Drop-Regel vom Gastnetz ins Hausnetz nachgewiesen.",
-        "warn": "IPv4: eine Accept-Regel erlaubt Zugriff vom Gastnetz ins Hausnetz.",
-        "unknown": "IPv4: keine eindeutige Regel gefunden.",
-    }[status_v4]]
-    status = status_v4
-
-    try:
-        ipv6_on = core._ipv6_relevant()
-    except (RouterCommandFailed, RouterUnreachable):
-        ipv6_on = None
-    if ipv6_on is None:
-        # Weder "sicher aktiv" noch "sicher aus" -- ein "good" allein auf Basis von IPv4
-        # waere hier ein falsches Gruen, wenn IPv6 unbemerkt zusaetzlich offen waere.
-        status = max(status, "unknown", key=_ISOLATION_SEVERITY.get)
-        detail_parts.append("IPv6-Status konnte nicht ermittelt werden.")
-    elif ipv6_on:
-        try:
-            isolated_v6 = core._guest_isolation(interface, filter_path="/ipv6 firewall filter")
-        except (RouterCommandFailed, RouterUnreachable):
-            isolated_v6 = None
-        status_v6 = _isolation_status_label(isolated_v6)
-        detail_parts.append({
-            "good": "IPv6: aktive Drop-Regel vom Gastnetz ins Hausnetz nachgewiesen.",
-            "warn": "IPv6: eine Accept-Regel erlaubt Zugriff vom Gastnetz ins Hausnetz.",
-            "unknown": "IPv6: aktiv, aber keine eindeutige Regel gefunden.",
-        }[status_v6])
-        status = max(status, status_v6, key=_ISOLATION_SEVERITY.get)
-    # sonst (ipv6_on is False): Stack deaktiviert oder Paket fehlt -- keine IPv6-Angriffsflaeche.
-
-    if bridge_bypass is None and status == "good":
-        status = "unknown"
+    status = befund["status"]
+    beleg = befund["schicht2"]["beleg"]
+    detail_parts = []
+    if beleg == "bypass":
+        detail_parts.append("Gastnetz und Hausnetz liegen auf derselben Bridge, 'use-ip-firewall' "
+                            "ist nicht aktiv -- die IP-Firewall greift für diesen Verkehr gar "
+                            "nicht, unabhängig von vorhandenen Regeln. Weder ein Bridge-Firewall-"
+                            "Filter noch eine VLAN-Trennung konnten die Isolation nachweisen.")
+    elif beleg == "vlan_geteilt":
+        detail_parts.append("Layer 2: Ein Hausnetz-Port liegt im selben VLAN wie das Gastnetz, oder "
+                            "der Gast-Port lässt selbst getaggte Pakete in andere VLANs.")
+    elif beleg == "vlan_unklar":
+        detail_parts.append("Layer 2: Die VLAN-Trennung konnte nicht nachgewiesen werden.")
+    elif beleg == "unlesbar":
         detail_parts.append("Bridge-Zugehörigkeit konnte nicht geprüft werden.")
+    elif beleg == "name_unbekannt":
+        detail_parts.append("Layer 2: Das Gast-Interface ist unter diesem Namen am Router nicht zu finden, "
+                            "etwa wegen eines Sonderzeichens im Namen. Ein Name ohne Sonderzeichen behebt das.")
+    elif beleg == "vlan":
+        detail_parts.append("Layer 2: Das Gastnetz liegt in einem eigenen VLAN.")
+    elif beleg == "filter":
+        detail_parts.append("Layer 2: Eine aktive Bridge-Firewall-Filter-Regel sperrt den Verkehr "
+                            "zum Hausnetz.")
 
-    plain = {
-        "good": "Das Gastnetz ist vom Hausnetz getrennt - Geräte im Gastnetz kommen nicht "
-                "ins Hausnetz.",
-        "warn": "Geräte im Gastnetz können aktuell ins Hausnetz gelangen. Lege eine "
-                "Firewall-Regel an, die Verkehr vom Gastnetz-Interface ins Hausnetz blockt "
-                "(Forward-Kette, Aktion 'drop').",
-        "unknown": "Es konnte nicht eindeutig geklärt werden, ob das Gastnetz vom Hausnetz "
-                   "getrennt ist. Das ist keine Bestätigung der Sicherheit - bitte die "
-                   "Firewall-Regeln manuell prüfen.",
-    }[status]
+    texte = {
+        "IPv4": {
+            True: "IPv4: aktive Drop-Regel vom Gastnetz ins Hausnetz nachgewiesen.",
+            False: "IPv4: eine Accept-Regel erlaubt Zugriff vom Gastnetz ins Hausnetz.",
+            None: "IPv4: keine eindeutige Regel gefunden.",
+            "insel": "IPv4: Auf diesem Gerät gibt es für das Gastnetz keinen Router und keinen Weg nach außen.",
+        },
+        "IPv6": {
+            True: "IPv6: aktive Drop-Regel vom Gastnetz ins Hausnetz nachgewiesen.",
+            False: "IPv6: eine Accept-Regel erlaubt Zugriff vom Gastnetz ins Hausnetz.",
+            None: "IPv6: aktiv, aber keine eindeutige Regel gefunden.",
+            "insel": "IPv6: Auf diesem Gerät gibt es für das Gastnetz keinen Router und keinen Weg nach außen.",
+            "keine_adresse": "IPv6: An diesem Gerät gibt es kein anderes IPv6-Netz, in das das Gastnetz geroutet werden könnte.",
+        },
+    }
+    familien = [("IPv4", befund["v4"])]
+    if befund["ipv6_an"] is None:
+        detail_parts.append("IPv6-Status konnte nicht ermittelt werden.")
+    elif befund["ipv6_an"]:
+        familien.append(("IPv6", befund["v6"]))
+    extern = False
+    for name, wert in familien:
+        if wert == "extern":
+            extern = True
+        else:
+            detail_parts.append(texte[name][wert])
+    if extern:
+        detail_parts.append("Geroutet wird auf einem anderen Gerät, dort muss die Sperre liegen.")
+    if status == "unknown" and befund.get("hinter_router"):
+        detail_parts.append("Der Internetausgang hat eine private Adresse, dieser Router hängt also vermutlich "
+                            "hinter einem anderen Router. Eine Sperre muss auch das Netz davor abdecken.")
+
+    if beleg in ("bypass", "vlan_geteilt"):
+        plain = ("Gastnetz und Hausnetz sind aktuell NICHT sauber getrennt - Geräte im "
+                 "Gastnetz können möglicherweise auf dein Hausnetz zugreifen. Richte "
+                 "eine Bridge-Firewall-Regel oder eine VLAN-Trennung für das "
+                 "Gastnetz-Interface ein, oder trenne Gast- und Hausnetz auf "
+                 "getrennte Netzwerkkarten/Bridges.")
+    elif extern and status == "unknown" and befund["schicht2"]["getrennt"] is True:
+        plain = ("Auf diesem Gerät ist das Gastnetz vom Hausnetz getrennt. Geroutet wird aber "
+                 "auf einem anderen Gerät, etwa deinem Router. Prüfe dort, ob das Gastnetz "
+                 "ins Hausnetz darf.")
+    else:
+        plain = {
+            "good": "Das Gastnetz ist vom Hausnetz getrennt - Geräte im Gastnetz kommen nicht "
+                    "zu Geräten im Hausnetz. Ob sie die Verwaltung des Routers erreichen, prüft "
+                    "diese Kontrolle nicht.",
+            "warn": "Geräte im Gastnetz können aktuell ins Hausnetz gelangen. Lege eine "
+                    "Firewall-Regel an, die Verkehr vom Gastnetz-Interface ins Hausnetz blockt "
+                    "(Forward-Kette, Aktion 'drop').",
+            "unknown": "Es konnte nicht eindeutig geklärt werden, ob das Gastnetz vom Hausnetz "
+                       "getrennt ist. Das ist keine Bestätigung der Sicherheit - bitte die "
+                       "Firewall-Regeln manuell prüfen.",
+        }[status]
     return {"id": "guest_isolation", "label": "Gastnetz-Isolation", "status": status,
             "detail": " ".join(detail_parts), "plain": plain}
 
