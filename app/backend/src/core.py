@@ -36,6 +36,7 @@ from routeros import (
     parse_colon,
     parse_terse,
     run_command,
+    terse_flags,
 )
 
 cfg = load_config()
@@ -458,7 +459,25 @@ def _has_unresolved_matchers(row: dict, supported: set[str]) -> bool:
                if key not in _FIREWALL_METADATA and key not in supported)
 
 
-def _resolve_interface_list_members(list_name: str) -> set[str] | None:
+def _terse_ohne_abgeschaltete(output: str) -> list[dict]:
+    """Wie parse_terse(), aber ohne Zeilen mit dem Flag X.
+
+    Bewusst nicht row["disabled"]: Das wird auch aus einem "disabled=true" im Kommentar wahr, und
+    eine aktive Regel verschwaende damit aus der Pruefung.
+    """
+    aktive = []
+    for zeile in output.splitlines():
+        if "X" not in terse_flags(zeile):
+            aktive.extend(parse_terse(zeile))
+    return aktive
+
+
+# Eingebaute Listen ohne Mitgliederzeilen, gemessen am CHR: "member print where list=all" ist leer,
+# obwohl die Liste alle Interfaces enthaelt. "none" ist dagegen wirklich leer.
+_LISTEN_OHNE_ZEILEN = {"all", "dynamic", "static"}
+
+
+def _resolve_interface_list_members(list_name: str, nur_aktive: bool = False) -> set[str] | None:
     """Löst eine RouterOS-Interface-Liste (z.B. "LAN") zu ihren tatsächlichen Mitgliedsnamen auf.
 
     Audit "Listenmitgliedschaft", 10.09.2026: vorher wurde jede Liste, die nicht wörtlich "LAN"
@@ -470,17 +489,38 @@ def _resolve_interface_list_members(list_name: str) -> set[str] | None:
 
     None: nicht sicher auflösbar (Router nicht erreichbar, Befehl fehlgeschlagen, oder ein
     Eintrag ohne lesbares "interface"-Feld) -- dann lieber ehrlich unklar bleiben als raten.
+
+    nur_aktive (2026-11-05): Ein abgeschaltetes Mitglied wirkt im Router nicht. Fragt man, was eine
+    REGEL trifft, darf es deshalb nicht zaehlen (nur_aktive=True). Fragt man dagegen, was als
+    HAUSNETZ gilt, bleibt es drin: Dort wuerde Weglassen die Pruefung milder machen, etwa beim
+    Bridge-Bypass, und das Gastnetz saehe sicherer aus, als es ist. Ein dynamisches Mitglied (Flag
+    D, etwa von Detect Internet) kann sich jederzeit aendern und belegt nichts: None.
+
+    include=/exclude= und die eingebauten Listen tauchen in den Mitgliederzeilen nicht auf, wirken
+    aber (am CHR gemessen: Regel auf eine Liste mit include=all zaehlt Pakete, Zeilen leer). "Keine
+    Zeile" hiesse dort faelschlich "kein Mitglied", deshalb None.
     """
+    if list_name in _LISTEN_OHNE_ZEILEN:
+        return None
     try:
-        rows = parse_terse(router(f'/interface list member print terse where list="{list_name}"'))
+        definition = parse_terse(router(f'/interface list print terse where name="{list_name}"'))
+        output = router(f'/interface list member print terse where list="{list_name}"')
     except (RouterCommandFailed, RouterUnreachable):
         return None
+    if any(row.get(feld) not in (None, "", "none") for row in definition for feld in ("include", "exclude")):
+        return None
     members = set()
-    for row in rows:
-        iface = row.get("interface")
-        if not iface:
-            return None
-        members.add(iface)
+    for zeile in output.splitlines():
+        flags = terse_flags(zeile)
+        for row in parse_terse(zeile):
+            iface = row.get("interface")
+            if not iface:
+                return None
+            if nur_aktive and "D" in flags:
+                return None
+            if nur_aktive and "X" in flags:
+                continue
+            members.add(iface)
     return members
 
 
@@ -495,7 +535,7 @@ def _interface_list_covers_lan(list_name: str) -> bool | None:
     lan_members = _resolve_interface_list_members("LAN")
     if not lan_members:
         return None
-    members = _resolve_interface_list_members(list_name)
+    members = _resolve_interface_list_members(list_name, nur_aktive=True)
     if members is None:
         return None
     if lan_members <= members:
@@ -526,11 +566,12 @@ def _static_address_list_networks(list_name: str) -> set[ipaddress.IPv4Network |
         output = router(f'/ip firewall address-list print terse where list="{safe_name}" and dynamic=no')
     except (RouterCommandFailed, RouterUnreachable):
         return None
-    rows = parse_terse(output)
-    if output.strip() and not rows:
+    if output.strip() and not parse_terse(output):
         return None
     networks = set()
-    for row in rows:
+    # 2026-11-05, am CHR gemessen: "where dynamic=no" liefert auch abgeschaltete Zeilen, nur am
+    # Flag X zu erkennen. Sie zaehlen im Router keine Pakete und belegen deshalb keine Abdeckung.
+    for row in _terse_ohne_abgeschaltete(output):
         value = row.get("address")
         if not value:
             return None
@@ -583,7 +624,8 @@ def _address_list_covers_interface(list_name: str, interface: str) -> bool | Non
 
 def _bridge_port_of(safe_interface: str) -> str | None:
     """Liefert den Bridge-Namen, wenn "safe_interface" ein Bridge-Port ist, sonst None."""
-    rows = parse_terse(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
+    # Ein Port darf mehrere Zeilen haben (am CHR gemessen), nur eine aktive verbindet ihn wirklich.
+    rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
     return rows[0].get("bridge") if rows else None
 
 
@@ -615,7 +657,8 @@ def _guest_bridge_bypass(safe_interface: str) -> bool | None:
     if not bridge_name:
         return False
     lan_members = _resolve_interface_list_members("LAN")
-    if lan_members is None:
+    if not lan_members:
+        # Eine leere Liste sagt nichts ueber das Hausnetz, "kein Bypass" waere ein Grund fuer Gruen.
         return None
     same_bridge_is_lan = bridge_name in lan_members
     if not same_bridge_is_lan:
@@ -623,7 +666,7 @@ def _guest_bridge_bypass(safe_interface: str) -> bool | None:
         # Bridge individuell in der LAN-Liste steht (falls die Liste einzelne Ports statt der
         # Bridge selbst enthält).
         try:
-            all_ports = parse_terse(router(f'/interface bridge port print terse where bridge="{bridge_name}"'))
+            all_ports = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where bridge="{bridge_name}"'))
         except (RouterCommandFailed, RouterUnreachable):
             return None
         siblings = {row.get("interface") for row in all_ports if row.get("interface") != safe_interface}
@@ -642,7 +685,7 @@ def _bridge_siblings(bridge_name: str, exclude: str) -> set[str] | None:
     """Alle Ports derselben Bridge außer "exclude" (typischerweise das Gastnetz-Interface
     selbst). None: Portliste nicht lesbar."""
     try:
-        rows = parse_terse(router(f'/interface bridge port print terse where bridge="{bridge_name}"'))
+        rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where bridge="{bridge_name}"'))
     except (RouterCommandFailed, RouterUnreachable):
         return None
     return {row.get("interface") for row in rows if row.get("interface") and row.get("interface") != exclude}
@@ -676,7 +719,7 @@ def _interface_list_covers_ports(list_name: str, ports: set[str]) -> bool | None
     Überschneidung oder nicht auflösbar."""
     if not ports:
         return None
-    members = _resolve_interface_list_members(list_name)
+    members = _resolve_interface_list_members(list_name, nur_aktive=True)
     if members is None:
         return None
     if ports <= members:
@@ -716,12 +759,9 @@ def _bridge_filter_isolation(safe_interface: str, bridge_name: str) -> bool | No
         output = router('/interface bridge filter print terse where chain=forward')
     except (RouterCommandFailed, RouterUnreachable):
         return None
-    rows = parse_terse(output)
-    if output.strip() and not rows:
+    if output.strip() and not parse_terse(output):
         return None
-    for row in rows:
-        if row.get("disabled"):
-            continue
+    for row in _terse_ohne_abgeschaltete(output):
         action = row.get("action", "accept")
         if action in ("passthrough", "log", "mark-packet", "set-priority"):
             continue
@@ -739,7 +779,7 @@ def _bridge_filter_isolation(safe_interface: str, bridge_name: str) -> bool | No
         if in_if_list:
             if in_if_list.startswith("!"):
                 return None
-            members = _resolve_interface_list_members(in_if_list)
+            members = _resolve_interface_list_members(in_if_list, nur_aktive=True)
             if members is None:
                 return None
             if safe_interface not in members:
@@ -772,7 +812,9 @@ def _bridge_filter_isolation(safe_interface: str, bridge_name: str) -> bool | No
             list_unresolved = covers is None
         if action == "accept" and (out_if or list_unresolved):
             return False
-        targets_lan = list_targets_lan or (bool(out_if) and out_if in lan_ports)
+        # Ein einzelner Ausgangsport ist nur dann "das Hausnetz", wenn es keinen zweiten gibt: Eine
+        # Sperre auf ether2 laesst ether3 offen. Die Accept-Richtung steht schon oben.
+        targets_lan = list_targets_lan or (bool(out_if) and lan_ports == {out_if})
         targets_anything = not out_if_list and not out_if
         if not (targets_lan or targets_anything):
             continue
@@ -818,7 +860,7 @@ def _vlan_isolation(safe_interface: str, bridge_name: str) -> bool | None:
         return None
 
     try:
-        port_rows = parse_terse(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
+        port_rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
     except (RouterCommandFailed, RouterUnreachable):
         return None
     if not port_rows:
@@ -830,11 +872,11 @@ def _vlan_isolation(safe_interface: str, bridge_name: str) -> bool | None:
         return None
 
     try:
-        vlan_rows = parse_terse(router(f'/interface bridge vlan print terse where bridge="{bridge_name}"'))
+        aktive_vlans = _terse_ohne_abgeschaltete(router(f'/interface bridge vlan print terse where bridge="{bridge_name}"'))
     except (RouterCommandFailed, RouterUnreachable):
         return None
-    matching = [row for row in vlan_rows
-                if not row.get("disabled") and pvid in {v.strip() for v in row.get("vlan-ids", "").split(",") if v.strip()}]
+    matching = [row for row in aktive_vlans
+                if pvid in {v.strip() for v in row.get("vlan-ids", "").split(",") if v.strip()}]
     if not matching:
         # Kein Tabelleneintrag fuer diese VLAN-ID -- RouterOS' Default-Verhalten (Egress-Drop
         # ohne Eintrag) koennte tatsaechlich isolieren, ist hier aber bewusst nicht als Nachweis
@@ -1005,17 +1047,23 @@ def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filte
     zu IPv4 bestaetigt.
     """
     output = router(f'{filter_path} print terse where chain=forward')
-    rows = parse_terse(output)
-    if output.strip() and not rows:
+    if not parse_terse(output):
         return None
-    for row in rows:
-        if row.get("disabled"):
-            continue
+    # Am CHR gemessen (2026-11-05): Gerouteter Verkehr von einem Bridge-Port trifft in-interface=
+    # <Bridge>, nicht in-interface=<Port>. Eine Regel auf den Port zaehlt 0 Pakete. Geroutet kommt das
+    # Gastnetz dann ueber die Bridge oder ein VLAN-Interface darauf herein, und das wertet diese
+    # Funktion nicht aus. Sie kann also nichts belegen.
+    try:
+        if _bridge_port_of(safe_interface):
+            return None
+    except (RouterCommandFailed, RouterUnreachable):
+        return None
+    for row in _terse_ohne_abgeschaltete(output):
         in_if_list = row.get("in-interface-list")
         if in_if_list:
             if in_if_list.startswith("!"):
                 return None
-            members = _resolve_interface_list_members(in_if_list)
+            members = _resolve_interface_list_members(in_if_list, nur_aktive=True)
             if members is None:
                 return None
             if safe_interface not in members:
@@ -1041,6 +1089,11 @@ def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filte
         if conn_state and "new" not in conn_state.split(","):
             continue
         source_list = row.get("src-address-list")
+        destination_list = row.get("dst-address-list")
+        # IPv6-Adresslisten sind eigene Listen, auch bei gleichem Namen. Gelesen werden unten aber
+        # nur die IPv4-Listen und -Adressen. Damit laesst sich fuer IPv6 nichts belegen.
+        if (source_list or destination_list) and filter_path != "/ip firewall filter":
+            return None
         if source_list:
             source_covers_guest = _address_list_covers_interface(source_list, safe_interface)
             # Eine eingeschränkte Accept-Regel könnte einzelnen Gastadressen Zugang geben;
@@ -1049,7 +1102,6 @@ def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filte
             # behaupten. Dynamische und Teil-Listen fallen ebenfalls hier hinein.
             if source_covers_guest is not True:
                 return None
-        destination_list = row.get("dst-address-list")
         if destination_list:
             destination_covers_lan = _address_list_covers_interface(destination_list, "LAN")
             if destination_covers_lan is not True:
@@ -1058,12 +1110,32 @@ def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filte
         out_if = row.get("out-interface")
         if row.get("action") in ("jump", "return"):
             return None
+        if out_if_list and out_if_list.startswith("!"):
+            # Am CHR gemessen: "member print where list=!WAN" ist leer. Die Liste galte sonst als
+            # disjunkt zum Hausnetz, und eine Freigabe "out-interface-list=!WAN" fiele durch.
+            return None
         list_targets_lan = out_if_list == "LAN"
         list_unresolved = bool(out_if_list) and out_if_list != "LAN"
         if list_unresolved:
             covers = _interface_list_covers_lan(out_if_list)
             list_targets_lan = covers is True
             list_unresolved = covers is None
+        elif list_targets_lan:
+            lan_alle = _resolve_interface_list_members("LAN")
+            lan_aktiv = _resolve_interface_list_members("LAN", nur_aktive=True)
+            if lan_aktiv is None or not (lan_alle or set()) - {safe_interface}:
+                # Unlesbar, leer oder nur das Gastnetz selbst: Die Regel belegt nichts ueber das Hausnetz.
+                list_targets_lan = False
+                list_unresolved = True
+            elif row.get("action") == "accept":
+                # Trifft die Freigabe mindestens ein aktives Mitglied, ist das Leck belegt. Ohne
+                # aktives Mitglied trifft sie nichts.
+                list_targets_lan = bool(lan_aktiv - {safe_interface})
+            elif (lan_alle - lan_aktiv) - {safe_interface}:
+                # Die Sperre deckt "LAN" nur teilweise ab: Das abgeschaltete Mitglied bleibt Hausnetz,
+                # wird von ihr aber nicht erfasst. Das Gastnetz selbst zaehlt dabei nicht.
+                list_targets_lan = False
+                list_unresolved = True
         if row.get("action") == "accept" and (out_if or list_unresolved):
             # Ob das einzelne Ziel bzw. eine nicht aufloesbare Liste LAN-Mitglieder enthält,
             # ist ohne Topologie-/Listenauflösung nicht nachgewiesen.

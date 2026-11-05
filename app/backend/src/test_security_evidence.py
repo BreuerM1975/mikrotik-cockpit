@@ -130,6 +130,8 @@ class InterfaceListResolutionTests(unittest.TestCase):
                 return "0 chain=forward action=drop in-interface-list=Gaeste out-interface-list=LAN\n"
             if command == '/interface list member print terse where list="Gaeste"':
                 return "0 list=Gaeste interface=guest\n"
+            if command == '/interface list member print terse where list="LAN"':
+                return "0 list=LAN interface=bridge\n"
             return ""
 
         with patch.object(core, "router", side_effect=router_stub):
@@ -208,16 +210,17 @@ class BridgeBypassTests(unittest.TestCase):
         with patch.object(core, "router", side_effect=router_stub):
             self.assertIsNone(core._guest_bridge_bypass("guest"))
 
-    def test_false_when_lan_list_is_empty(self):
-        # Eine leere Antwort ist kein Fehler, sondern eine gueltige (wenn auch unuebliche)
-        # Aussage: die Liste "LAN" hat aktuell keine Mitglieder -- kein Bypass nachweisbar.
+    def test_unknown_when_lan_list_is_empty(self):
+        # Bis 2026-11-05 hiess das False, "kein Bypass". Eine leere Liste sagt aber nichts ueber das
+        # Hausnetz, und zusammen mit einer allgemeinen Drop-Regel wurde daraus Gruen, obwohl Gast
+        # und Hausnetz auf derselben Bridge liegen koennen.
         def router_stub(command):
             if command == '/interface bridge port print terse where interface="guest"':
                 return "0 interface=guest bridge=bridge\n"
             return ""
 
         with patch.object(core, "router", side_effect=router_stub):
-            self.assertIs(core._guest_bridge_bypass("guest"), False)
+            self.assertIsNone(core._guest_bridge_bypass("guest"))
 
 
 class BridgeFilterIsolationTests(unittest.TestCase):

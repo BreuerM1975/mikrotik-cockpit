@@ -470,6 +470,19 @@ def parse_colon(output: str) -> dict:
     return result
 
 
+def terse_flags(line: str) -> str:
+    """Flag-Buchstaben einer Terse-Zeile, alles vor dem ersten "key=" ohne die Nummer.
+
+    Nur hier ist ein Flag echt: Ein Kommentar steht hinter dem ersten "=" und kann nichts
+    vortaeuschen. Gemessen am CHR 7.24.5 und 7.25.1 (2026-11-05): "comment=notiz disabled=true"
+    erscheint in Regeln, Adresslisten und Listenmitgliedern woertlich als scheinbares Feld.
+    """
+    teile = line.strip().split("=", 1)
+    woerter = teile[0].split()
+    # Das letzte Wort vor dem "=" ist der Feldname ("0 X list=..." ergibt "X", nicht "Xlist").
+    return "".join(woerter[1:-1] if len(teile) > 1 else woerter[1:])
+
+
 def parse_terse(output: str) -> list[dict]:
     rows = []
     for line in output.splitlines():
@@ -489,8 +502,7 @@ def parse_terse(output: str) -> list[dict]:
         # RouterOS codiert "running"/"disabled" oft nur als Flag-Buchstabe vor dem ersten
         # key=value (z.B. "0 R name=ether1 ..."), nicht als eigenes Feld -- live am 08.09.
         # gegen chr01 gefunden, wo genau das den Status-Endpunkt faelschlich "down" meldete.
-        prefix = line[: line.index("=")] if "=" in line else line
-        flags = "".join(prefix.split()[1:])
+        flags = terse_flags(line)
         row["running"] = row.get("running", "").lower() == "true" or "R" in flags
         row["disabled"] = row.get("disabled", "").lower() == "true" or "X" in flags
         rows.append(row)

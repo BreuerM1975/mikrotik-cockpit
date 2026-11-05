@@ -514,7 +514,6 @@ class ApiTest(unittest.TestCase):
         wireless_driver.assert_called_once_with(r"wlan\$gast", validated=True)
         _router.assert_any_call(r'/interface wireless print terse where name="wlan\$gast"')
         _router.assert_any_call('/ip firewall filter print terse where chain=forward')
-        self.assertEqual(_router.call_count, 2)
 
     @patch("routes_basis.ensure_host_key_trusted")
     @patch("routes_basis.run_command", side_effect=RouterAuthFailed("Permission denied"))
@@ -1220,7 +1219,11 @@ class ApiTest(unittest.TestCase):
         for output, expected in cases:
             with self.subTest(expected=expected):
                 mock_router.reset_mock(return_value=True)
-                mock_router.return_value = output
+                mock_router.side_effect = lambda command, regeln=output: {
+                    '/interface list member print terse where list="LAN"': "0 list=LAN interface=bridge\n",
+                    '/interface list member print terse where list="WAN"': "0 list=WAN interface=ether1\n",
+                    '/ip firewall filter print terse where chain=forward': regeln,
+                }.get(command, "")
                 self.assertIs(core_module._guest_isolation("wlan-gast"), expected)
 
     @patch("core.router")
@@ -1252,10 +1255,13 @@ class ApiTest(unittest.TestCase):
         # Eine Standardregel wie "accept established,related,untracked" darf eine spaeter
         # folgende, vollstaendige Drop-Regel nicht entwerten -- sie kann keine NEUE
         # Verbindung vom Gastnetz ins Hausnetz eroeffnen.
-        mock_router.return_value = (
-            '0 action=accept connection-state=established,related,untracked disabled=false\n'
-            '1 action=drop in-interface=wlan-gast out-interface-list=LAN disabled=false\n'
-        )
+        mock_router.side_effect = lambda command: {
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=bridge\n",
+            '/ip firewall filter print terse where chain=forward': (
+                '0 action=accept connection-state=established,related,untracked disabled=false\n'
+                '1 action=drop in-interface=wlan-gast out-interface-list=LAN disabled=false\n'
+            ),
+        }.get(command, "")
         self.assertIs(core_module._guest_isolation("wlan-gast"), True)
 
     @patch("core.router", side_effect=fake_router)
@@ -2002,6 +2008,8 @@ class ApiTest(unittest.TestCase):
         headers = {"X-Cockpit-Session": session_id}
 
         def router_stub(command):
+            if command == '/interface list member print terse where list="LAN"':
+                return "0 list=LAN interface=bridge\n"
             if command == '/interface bridge port print terse where interface="guest"':
                 return ""
             if command == "/ip firewall filter print terse where chain=forward":
@@ -2027,6 +2035,8 @@ class ApiTest(unittest.TestCase):
         headers = {"X-Cockpit-Session": session_id}
 
         def router_stub(command):
+            if command == '/interface list member print terse where list="LAN"':
+                return "0 list=LAN interface=bridge\n"
             if command == '/interface bridge port print terse where interface="guest"':
                 return ""
             if command == "/ip firewall filter print terse where chain=forward":
