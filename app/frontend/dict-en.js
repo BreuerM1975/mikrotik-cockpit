@@ -219,6 +219,30 @@ window.COCKPIT_DICT_EN = {
   "Kein RouterBOARD (z. B. CHR).": "No RouterBOARD (e.g. CHR).",
   "RouterBOARD-Stand konnte nicht gelesen werden.": "RouterBOARD status could not be read.",
   "Versionsdaten der RouterBOARD-Firmware fehlen.": "RouterBOARD firmware version data is missing.",
+  "Hinweise auf unbefugte Änderungen": "Signs of unauthorized changes",
+  "Device-Mode konnte nicht gelesen werden.": "Device-mode could not be read.",
+  "Es konnte nicht geprüft werden, ob RouterOS Hinweise auf unbefugte Änderungen gefunden hat.":
+    "It could not be checked whether RouterOS found signs of unauthorized changes.",
+  "Dieses RouterOS kennt den Device-Mode nicht.": "This RouterOS does not have device-mode.",
+  "Diese RouterOS-Version kennt den Device-Mode nicht, die Prüfung entfällt.":
+    "This RouterOS version does not have device-mode; the check does not apply.",
+  "RouterOS hat das Gerät markiert (flagged).": "RouterOS has flagged this device.",
+  "RouterOS hat beim Start Anzeichen für unbefugte Änderungen gefunden, Verdächtiges abgeschaltet und das Gerät markiert. Geh davon aus, dass jemand eingedrungen ist: Prüfe alle Einstellungen auf Unbekanntes, ändere alle Passwörter und aktualisiere RouterOS. Erst danach hebst du die Markierung auf: /system/device-mode/update flagged=no, dann ein Tastendruck oder Stromzyklus am Gerät, bei einer virtuellen Maschine ein harter Neustart.":
+    "At startup RouterOS found signs of unauthorized changes, disabled what looked suspicious and flagged the device. Assume someone has broken in: check all settings for anything unknown, change all passwords and update RouterOS. Only then clear the flag: /system/device-mode/update flagged=no, followed by a button press or power cycle at the device, or a hard reboot on a virtual machine.",
+  "RouterOS zeigt keinen Wert für flagged an.": "RouterOS shows no value for flagged.",
+  "Dieser Router zeigt nicht an, ob RouterOS Hinweise auf unbefugte Änderungen gefunden hat. Aktuelle RouterOS-Versionen zeigen den Wert an, ein Update kann hier helfen.":
+    "This router does not show whether RouterOS found signs of unauthorized changes. Current RouterOS versions show the value, so an update may help here.",
+  "flagging-enabled steht auf no.": "flagging-enabled is set to no.",
+  "Die Erkennung unbefugter Änderungen ist auf diesem Router abgeschaltet, deshalb lässt sich hier nichts bestätigen.":
+    "Detection of unauthorized changes is turned off on this router, so nothing can be confirmed here.",
+  "RouterOS hat beim letzten Start keine Hinweise auf unbefugte Änderungen gefunden. Das ersetzt keine vollständige Prüfung.":
+    "RouterOS found no signs of unauthorized changes at the last startup. This does not replace a full check.",
+  "RouterOS hat beim letzten Start keine Hinweise auf unbefugte Änderungen gefunden. Das ersetzt keine vollständige Prüfung. Im Modus home sind ab Werk unter anderem Zeitplaner, Fetch und E-Mail gesperrt, solange sie nicht einzeln freigeschaltet wurden. Cockpit braucht sie nicht.":
+    "RouterOS found no signs of unauthorized changes at the last startup. This does not replace a full check. In home mode the scheduler, fetch and email are among the features blocked by default unless individually enabled. Cockpit does not need them.",
+  "RouterOS hat dieses Gerät als möglicherweise manipuliert markiert und sperrt deshalb diese Aktion. Details stehen in der Sicherheitsprüfung.":
+    "RouterOS has flagged this device as possibly tampered with and therefore blocks this action. See the security check for details.",
+  "Der Device-Mode dieses Routers sperrt diese Funktion. Zum Freischalten /system/device-mode/update mit dem Namen der Funktion und =yes ausführen und innerhalb der angezeigten Frist die Reset- oder Mode-Taste drücken oder den Strom trennen. Der Router startet dann neu. Ein normaler Neustart bricht die Änderung ab.":
+    "This router's device-mode blocks this feature. To enable it, run /system/device-mode/update with the feature's name and =yes, then press the reset or mode button or cut the power within the time shown. The router then restarts. A normal reboot cancels the change.",
   "{current} aktiv, {upgrade} bereit.": "{current} active, {upgrade} ready.",
   "Konfiguration sichern": "Back up the configuration",
   "Ein Backup hilft dir, nach einem Fehler schnell zu einem funktionierenden Zustand zurückzukehren. Erstelle eines vor größeren Änderungen.":

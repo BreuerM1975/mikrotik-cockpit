@@ -79,6 +79,22 @@ def handle_command_failed(exc):
             "message": "Der Router lehnt das Passwort wegen seiner eigenen Passwortrichtlinie ab "
                        "(zu kurz oder zu wenige Zeichenarten aus Ziffern, Klein- und Großbuchstaben, Symbolen).",
         }), 400
+    # Doku device-mode.md: beide Meldungen kommen als "failure:". Sie liegen nicht am Befehl,
+    # sondern am Zustand des Geraets, und freischalten geht nur per Tastendruck oder Stromzyklus.
+    if "configuration flagged" in lowered:
+        return jsonify({
+            "error": "router_flagged",
+            "message": "RouterOS hat dieses Gerät als möglicherweise manipuliert markiert und sperrt deshalb "
+                       "diese Aktion. Details stehen in der Sicherheitsprüfung.",
+        }), 403
+    if "not allowed by device-mode" in lowered:
+        return jsonify({
+            "error": "device_mode_blocked",
+            "message": "Der Device-Mode dieses Routers sperrt diese Funktion. Zum Freischalten "
+                       "/system/device-mode/update mit dem Namen der Funktion und =yes ausführen und innerhalb der "
+                       "angezeigten Frist die Reset- oder Mode-Taste drücken oder den Strom trennen. Der Router "
+                       "startet dann neu. Ein normaler Neustart bricht die Änderung ab.",
+        }), 403
     return jsonify({
         "error": "router_command_failed",
         "message": f"Der Router hat den Befehl abgelehnt: {text}",

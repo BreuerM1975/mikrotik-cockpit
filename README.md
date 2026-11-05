@@ -3,10 +3,10 @@
 > A live, browser-based management UI for MikroTik RouterOS — with plain-language explanations, safety warnings, and device direct-links. Think WinBox, but for the 80 % of daily tasks.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-265%20passing-brightgreen)](#)
+[![Tests](https://img.shields.io/badge/Tests-276%20passing-brightgreen)](#)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.x-orange)](#)
 
-**Status:** Working prototype — 265 backend tests, security audited, live-verified against RouterOS 7.23.1 and 7.24.5 on real hardware (MikroTik hAP ac Lite and wAP ax). Not yet a polished commercial product.
+**Status:** Working prototype — 276 backend tests, security audited, live-verified against RouterOS 7.23.1 and 7.24.5 on real hardware (MikroTik hAP ac Lite and wAP ax). Not yet a polished commercial product.
 
 **Language:** The interface speaks English and German. It follows your browser language and can be switched any time with the EN/DE button in the header.
 
@@ -74,7 +74,7 @@ Pro needs a GitHub account, because the private repository is delivered through 
 | **Backup** | Export RouterOS backup, download it, restore it |
 | **Network** | Change IP address, DNS servers, DHCP client mode, WAN interface |
 | **DHCP Ranges** | Add and remove DHCP server ranges per interface |
-| **Security check** | Plain-language audit of services, router access, guest isolation, RouterOS and RouterBOARD firmware and backup age |
+| **Security check** | Plain-language audit of services, router access, guest isolation, RouterOS and RouterBOARD firmware and backup age, and whether RouterOS has flagged signs of unauthorized changes |
 
 ### Pro tier (Cockpit Pro, via GitHub Sponsors)
 
@@ -265,7 +265,7 @@ python3 -m unittest discover -s app/backend/src -q
 python3 app/frontend/test-language-static.py
 ```
 
-Current test count: **265 backend tests**, all green. They mock the router, so no hardware is
+Current test count: **276 backend tests**, all green. They mock the router, so no hardware is
 needed.
 
 The interface is written in German and translated at the DOM level: `i18n.js` looks each string up

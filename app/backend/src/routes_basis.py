@@ -1631,6 +1631,54 @@ def _security_check_routerboard() -> dict:
                      "des Updates ist erledigt."}
 
 
+def _security_check_device_mode() -> dict:
+    # Doku device-mode.md: RouterOS prueft beim Start die Konfiguration auf Anzeichen unbefugter
+    # Zugriffe, schaltet Verdaechtiges ab und setzt flagged=yes. Das Handbuch verlangt dann, von
+    # einem Einbruch auszugehen. Steht in security_summary() vorn, weil "Heute wichtig" die erste
+    # Warnung zeigt.
+    label = "Hinweise auf unbefugte Änderungen"
+    try:
+        state = core.device_mode_state()
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        state = {"available": None}
+    if state["available"] is None:
+        return {"id": "device_mode", "label": label, "status": "unknown",
+                "detail": "Device-Mode konnte nicht gelesen werden.",
+                "plain": "Es konnte nicht geprüft werden, ob RouterOS Hinweise auf unbefugte Änderungen "
+                         "gefunden hat."}
+    if not state["available"]:
+        return {"id": "device_mode", "label": label, "status": "unknown",
+                "detail": "Dieses RouterOS kennt den Device-Mode nicht.",
+                "plain": "Diese RouterOS-Version kennt den Device-Mode nicht, die Prüfung entfällt."}
+    if state["flagged"]:
+        return {"id": "device_mode", "label": label, "status": "warn",
+                "detail": "RouterOS hat das Gerät markiert (flagged).",
+                "plain": "RouterOS hat beim Start Anzeichen für unbefugte Änderungen gefunden, Verdächtiges "
+                         "abgeschaltet und das Gerät markiert. Geh davon aus, dass jemand eingedrungen ist: "
+                         "Prüfe alle Einstellungen auf Unbekanntes, ändere alle Passwörter und aktualisiere "
+                         "RouterOS. Erst danach hebst du die Markierung auf: /system/device-mode/update flagged=no, "
+                         "dann ein Tastendruck oder Stromzyklus am Gerät, bei einer virtuellen Maschine ein harter "
+                         "Neustart."}
+    if state["flagged"] is None:
+        return {"id": "device_mode", "label": label, "status": "unknown",
+                "detail": "RouterOS zeigt keinen Wert für flagged an.",
+                "plain": "Dieser Router zeigt nicht an, ob RouterOS Hinweise auf unbefugte Änderungen gefunden hat. "
+                         "Aktuelle RouterOS-Versionen zeigen den Wert an, ein Update kann hier helfen."}
+    if not state["flagging_enabled"]:
+        return {"id": "device_mode", "label": label, "status": "unknown",
+                "detail": "flagging-enabled steht auf no.",
+                "plain": "Die Erkennung unbefugter Änderungen ist auf diesem Router abgeschaltet, deshalb "
+                         "lässt sich hier nichts bestätigen."}
+    plain = "RouterOS hat beim letzten Start keine Hinweise auf unbefugte Änderungen gefunden. Das ersetzt keine vollständige Prüfung."
+    if state["mode"] == "home":
+        plain = ("RouterOS hat beim letzten Start keine Hinweise auf unbefugte Änderungen gefunden. Das ersetzt "
+                 "keine vollständige Prüfung. Im Modus home sind ab Werk unter anderem Zeitplaner, Fetch und "
+                 "E-Mail gesperrt, solange sie nicht einzeln freigeschaltet wurden. Cockpit braucht sie nicht.")
+    return {"id": "device_mode", "label": label, "status": "good",
+            "detail": f"Modus {state['mode']}, keine Markierung.",
+            "plain": plain}
+
+
 def security_summary(online: bool = True) -> dict:
     """Sicherheits-Pruefungen und Score des aktuell gebundenen Geraets.
 
@@ -1639,6 +1687,7 @@ def security_summary(online: bool = True) -> dict:
     Update-Abfrage beim Hersteller -- siehe _security_check_firmware().
     """
     checks = [
+        _security_check_device_mode(),
         _security_check_service_hygiene(),
         _security_check_default_user(),
         _security_check_input_firewall(),
@@ -1650,6 +1699,10 @@ def security_summary(online: bool = True) -> dict:
     rated = [c for c in checks if c["status"] != "unknown"]
     good = sum(1 for c in rated if c["status"] == "good")
     score = round(100 * good / len(rated)) if rated else None
+    # Doku device-mode.md: Bei flagged ist von einem Einbruch auszugehen. Das darf keine gruene
+    # Anzeige ergeben, egal wie gut der Rest aussieht. Unter 50 zeigt die Anzeige rot.
+    if score is not None and any(c["id"] == "device_mode" and c["status"] == "warn" for c in checks):
+        score = min(score, 49)
     return {"score": score, "checks": checks, "good": good, "rated": len(rated)}
 
 

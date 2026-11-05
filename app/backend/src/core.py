@@ -953,6 +953,29 @@ def routerboard_state() -> dict:
     }
 
 
+def device_mode_state() -> dict:
+    """Liest den Device-Mode (Doku device-mode.md). Nur lesend, aendern geht ohnehin nur am Geraet."""
+    try:
+        output = router("/system device-mode print")
+    except RouterCommandFailed as exc:
+        text = str(exc).lower()
+        if "bad command name" in text or "no such command" in text:
+            return {"available": False}
+        raise
+    info = parse_colon(output)
+    if not info.get("mode"):
+        return {"available": None}
+    # None heisst "nicht ablesbar". RouterOS 6.49.21 liefert laut Forum nur "mode: enterprise";
+    # ein fehlender Wert darf nie als "nicht markiert" gelten.
+    flagged = {"yes": True, "true": True, "no": False, "false": False}.get(info.get("flagged", "").strip().lower())
+    return {
+        "available": True,
+        "mode": info["mode"],
+        "flagged": flagged,
+        "flagging_enabled": info.get("flagging-enabled", "").strip().lower() not in ("no", "false"),
+    }
+
+
 def _guest_isolation(safe_interface: str, filter_path: str = "/ip firewall filter") -> bool | None:
     """Bestätigt Isolation nur über eine aktive, konkrete Forward-Drop-Regel.
 

@@ -64,6 +64,7 @@ window.COCKPIT_PATTERNS_EN = [
   [/^(.+) aktiv, (.+) bereit\.$/, "$1 active, $2 ready."],
   [/^(.+) passt zu RouterOS\.$/, "$1 matches RouterOS."],
   [/^(.+) aktiv, RouterOS bringt nur (.+) mit\.$/, "$1 active, RouterOS only ships $2."],
+  [/^Modus (.+), keine Markierung\.$/, "Mode $1, not flagged."],
   [/^Die RouterBOARD-Firmware \((.+)\) ist neuer als die von RouterOS mitgelieferte \((.+)\), meist nach einem RouterOS-Downgrade\. Es ist nichts zu tun\.$/,
     "The RouterBOARD firmware ($1) is newer than the one shipped with RouterOS ($2), usually after a RouterOS downgrade. Nothing to do."],
   [/^Die RouterBOARD-Firmware ist auf dem Stand von RouterOS \((.+)\), Schritt 2 des Updates ist erledigt\.$/,

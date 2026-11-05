@@ -248,6 +248,61 @@ def zaehlende_sperre(semaphore):
     return lambda: _Gezaehlt(echte_sperre())
 
 
+# Echte Ausgaben, live am 05.11.2026 an einem hAP ac lite auf RouterOS 7.24.5 gelesen.
+DM_PRINT_ADVANCED = """\
+                 mode: advanced
+     allowed-versions: 7.13+,6.49.8+
+              flagged: no
+     flagging-enabled: yes
+            scheduler: yes
+                socks: yes
+                fetch: yes
+                 pptp: yes
+                 l2tp: yes
+       bandwidth-test: yes
+          traffic-gen: no
+              sniffer: yes
+                ipsec: yes
+                romon: yes
+                proxy: yes
+              hotspot: yes
+                  smb: yes
+                email: yes
+             zerotier: yes
+            container: no
+  install-any-version: no
+           partitions: no
+          routerboard: no
+        attempt-count: 0
+"""
+
+DM_PRINT_HOME = """\
+                 mode: home
+     allowed-versions: 7.13+,6.49.8+
+              flagged: no
+     flagging-enabled: yes
+            scheduler: no
+                socks: no
+                fetch: no
+                 pptp: yes
+                 l2tp: yes
+       bandwidth-test: no
+          traffic-gen: no
+              sniffer: no
+                ipsec: yes
+                romon: no
+                proxy: no
+              hotspot: no
+                  smb: yes
+                email: no
+             zerotier: no
+            container: no
+  install-any-version: no
+           partitions: no
+          routerboard: no
+        attempt-count: 0
+"""
+
 RB_PRINT_IN_SYNC = (
     '       routerboard: yes\n             model: RB952Ui-5ac2nD\n  factory-firmware: 6.49.13\n'
     '  current-firmware: 7.24.1\n  upgrade-firmware: 7.24.1\n'
@@ -1658,6 +1713,131 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         return {c["id"]: c for c in data["checks"]}["routerboard"], data
+
+    def _device_mode_check(self, output):
+        session_id = "security-check-dm-session"
+        core_module.SESSIONS[session_id] = {
+            "host": "secheck-dm-host", "user": "admin", "password": "x", "ssh_port": 22,
+        }
+
+        def dm_router(command):
+            if command == "/system device-mode print":
+                if isinstance(output, Exception):
+                    raise output
+                return output
+            return fake_router(command)
+
+        with patch("core.router", side_effect=dm_router):
+            resp = self.client.get("/api/v1/security-check", headers={"X-Cockpit-Session": session_id})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        return {c["id"]: c for c in data["checks"]}["device_mode"], data
+
+    def test_security_check_device_mode_real_output_is_good_and_rated(self):
+        check, data = self._device_mode_check(DM_PRINT_ADVANCED)
+        self.assertEqual(check["status"], "good")
+        self.assertEqual(check["detail"], "Modus advanced, keine Markierung.")
+        self.assertNotIn("home", check["plain"])
+        self.assertIn(check, [c for c in data["checks"] if c["status"] != "unknown"])
+        # Fehlt nur flagging-enabled, ist flagged trotzdem ablesbar
+        check, _ = self._device_mode_check(DM_PRINT_ADVANCED.replace("flagging-enabled: yes", ""))
+        self.assertEqual(check["status"], "good")
+
+    def test_security_check_device_mode_flagged_warns_first_and_lowers_score(self):
+        _, unflagged = self._device_mode_check(DM_PRINT_ADVANCED)
+        check, flagged = self._device_mode_check(DM_PRINT_ADVANCED.replace("flagged: no", "flagged: yes"))
+        self.assertEqual(check["status"], "warn")
+        self.assertIn("eingedrungen", check["plain"])
+        self.assertEqual(flagged["checks"][0]["id"], "device_mode")
+        self.assertLess(flagged["score"], unflagged["score"])
+
+    def test_security_check_device_mode_home_names_blocked_features(self):
+        check, _ = self._device_mode_check(DM_PRINT_HOME)
+        self.assertEqual(check["status"], "good")
+        self.assertEqual(check["detail"], "Modus home, keine Markierung.")
+        self.assertIn("Zeitplaner", check["plain"])
+        # Handbuch: "mode=home email=yes fetch=yes" ist erlaubt, der Text darf nichts Festes behaupten
+        self.assertIn("einzeln freigeschaltet", check["plain"])
+
+    def test_security_check_device_mode_detection_off_is_not_good(self):
+        for wert in ("no", "false"):
+            with self.subTest(wert=wert):
+                check, _ = self._device_mode_check(DM_PRINT_ADVANCED.replace("flagging-enabled: yes", f"flagging-enabled: {wert}"))
+                self.assertEqual(check["status"], "unknown")
+
+    def test_security_check_device_mode_unreadable_flagged_is_never_good(self):
+        # Forum 6.49.21: print liefert nur "mode: enterprise". Fehlt der Wert, ist nichts bestaetigt.
+        ausgaben = (
+            "  mode: enterprise\n",
+            "  mode: advanced\n  allowed-versions: 7.13+,6.49.8+\n",
+            DM_PRINT_ADVANCED.replace("flagged: no", "flagged:"),
+            DM_PRINT_ADVANCED.replace("flagged: no", "flagged: unknown"),
+        )
+        for ausgabe in ausgaben:
+            with self.subTest(ausgabe=ausgabe[:40]):
+                check, data = self._device_mode_check(ausgabe)
+                self.assertEqual(check["status"], "unknown")
+                self.assertIn("flagged", check["detail"])
+                self.assertNotIn("device_mode", [c["id"] for c in data["checks"] if c["status"] != "unknown"])
+
+    def test_security_check_device_mode_flagged_true_also_warns(self):
+        check, _ = self._device_mode_check(DM_PRINT_ADVANCED.replace("flagged: no", "flagged: true"))
+        self.assertEqual(check["status"], "warn")
+
+    def test_security_summary_flagged_router_is_never_green(self):
+        gut = {"id": "x", "label": "x", "status": "good", "detail": "", "plain": ""}
+        andere = ("service_hygiene", "default_user", "input_firewall", "guest_isolation", "firmware", "routerboard", "backup")
+        patches = [patch(f"routes_basis._security_check_{name}", return_value=gut) for name in andere]
+        for p in patches:
+            p.start()
+        self.addCleanup(patch.stopall)
+        _, sauber = self._device_mode_check(DM_PRINT_ADVANCED)
+        _, markiert = self._device_mode_check(DM_PRINT_ADVANCED.replace("flagged: no", "flagged: yes"))
+        self.assertEqual(sauber["score"], 100)
+        self.assertLess(markiert["score"], 50)
+        # Der Deckel gilt nur fuer die Markierung, eine andere Warnung drueckt nicht auf rot
+        with patch("routes_basis._security_check_backup", return_value={**gut, "status": "warn"}):
+            _, altes_backup = self._device_mode_check(DM_PRINT_ADVANCED)
+        self.assertEqual(altes_backup["score"], 88)
+
+    def test_security_check_device_mode_flagged_beats_detection_off(self):
+        check, _ = self._device_mode_check(
+            DM_PRINT_ADVANCED.replace("flagged: no", "flagged: yes").replace("flagging-enabled: yes", "flagging-enabled: no"))
+        self.assertEqual(check["status"], "warn")
+
+    def test_security_check_device_mode_missing_menu_is_unknown_and_unrated(self):
+        check, data = self._device_mode_check(RouterCommandFailed("bad command name device-mode (line 1 column 9)"))
+        self.assertEqual(check["status"], "unknown")
+        self.assertIn("kennt den Device-Mode nicht", check["detail"])
+        self.assertNotIn("device_mode", [c["id"] for c in data["checks"] if c["status"] != "unknown"])
+
+    def test_security_check_device_mode_read_problems_are_unknown_not_an_error(self):
+        for output in (RouterCommandFailed("not enough permissions (9)"), RouterTimeout("slow"), RouterUnreachable("weg"), ""):
+            with self.subTest(output=output):
+                check, data = self._device_mode_check(output)
+                self.assertEqual(check["status"], "unknown")
+                self.assertIn("nicht gelesen", check["detail"])
+                self.assertIn("score", data)
+
+    def test_router_refusal_from_device_mode_is_explained(self):
+        faelle = (
+            # Wortlaut live gemessen am hAP ac lite, RouterOS 7.24.5, Exitcode 0
+            ("failure: not allowed by device-mode (/tool/traffic-generator/quick; line 1)",
+             "device_mode_blocked", "Neustart"),
+            ("failure: not allowed by device-mode (/system/routerboard/settings/set; line 1)",
+             "device_mode_blocked", "Neustart"),
+            ("failure: not allowed by device-mode", "device_mode_blocked", "Neustart"),
+            # Wortlaut aus dem Handbuch, am Gerät nicht gemessen
+            ("failure: configuration flagged, check all router configuration for unauthorized changes "
+             "and update device-mode", "router_flagged", "manipuliert"),
+        )
+        for meldung, code, wort in faelle:
+            with self.subTest(code=code), app_module.app.test_request_context():
+                antwort, status = app_module.handle_command_failed(RouterCommandFailed(meldung))
+                self.assertEqual(status, 403)
+                self.assertEqual(antwort.get_json()["error"], code)
+                self.assertIn(wort, antwort.get_json()["message"])
+                self.assertNotIn("failure", antwort.get_json()["message"])
 
     def test_security_check_routerboard_reboot_pending_is_warn(self):
         check, _ = self._routerboard_check(RB_PRINT_REBOOT_PENDING)
