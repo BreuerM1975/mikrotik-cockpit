@@ -47,6 +47,10 @@ window.COCKPIT_SUBSTITUTIONS_EN = [
   ["Eine aktive Sperrregel für unbekannten Zugriff ist vorhanden.", "An active rule blocking unknown access is in place."],
   ["Keine aktive, generell wirkende Drop/Reject-Regel in der Input-Kette gefunden.",
     "No active, generally effective drop or reject rule found in the input chain."],
+  ["Eine Regel lässt sich nicht sicher lesen, weil sie freien Text enthält, der wie Regelfelder aussehen kann.",
+    "A rule cannot be read reliably, because it contains free text that may look like rule fields."],
+  ["Eine Sperrregel ist vorhanden, ob sie den Zugriff aus dem Internet trifft, lässt sich nicht belegen.",
+    "A blocking rule exists, but it cannot be shown that it covers access from the internet."],
 
   ["Bedingungen vollständig gemeldet", "All conditions reported"],
   ["Verbindungsstatus: ", "Connection state: "],

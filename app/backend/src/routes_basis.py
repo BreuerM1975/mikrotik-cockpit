@@ -43,6 +43,7 @@ from flask import Blueprint, current_app, jsonify, request, send_file
 
 import core
 from routeros import (
+    REGEL_UNKLAR,
     HostKeyChanged,
     HostKeyUnknown,
     RouterCommandFailed,
@@ -52,6 +53,7 @@ from routeros import (
     download_file,
     ensure_host_key_trusted,
     parse_colon,
+    parse_regeln,
     parse_terse,
     run_command,
     trust_host_key,
@@ -1240,7 +1242,7 @@ def _security_check_service_hygiene() -> dict:
                      "Risiko dar."}
 
 
-def _blocks_unauthorized_input(row: dict) -> bool:
+def _blocks_unauthorized_input(row: dict) -> bool | None:
     """Ob eine Input-Regel tatsaechlich unbekannten Zugriff generell abweist.
 
     Audit Runde 5, 09.09.: die alte Pruefung zaehlte JEDE aktive drop/reject-Regel,
@@ -1260,7 +1262,32 @@ def _blocks_unauthorized_input(row: dict) -> bool:
     if core._has_unresolved_matchers(row, {"in-interface", "in-interface-list", "connection-state"}):
         # Eng eingeschraenkte Regel (z.B. nur ein Port) deckt keinen generellen Schutz ab.
         return False
-    return True
+    return _sperre_deckt_wan(row)
+
+
+def _sperre_deckt_wan(row: dict) -> bool | None:
+    """Trifft die Sperre den Zugriff aus dem Internet? None: Das laesst sich nicht belegen.
+
+    Eine Sperre auf einem beliebigen Port schuetzt den Router nicht. Ohne lesbare Liste WAN ist offen,
+    ob "in-interface=ether1" der Internetzugang ist.
+    """
+    in_list, in_if = row.get("in-interface-list"), row.get("in-interface")
+    if not in_list and not in_if:
+        return True
+    if in_list and in_if:
+        return None
+    if in_list in ("WAN", "!LAN"):
+        return True
+    wan = core._resolve_interface_list_members("WAN")
+    if not wan:
+        return None
+    if in_if:
+        return in_if[1:] not in wan if in_if.startswith("!") else wan <= {in_if}
+    if in_list.startswith("!"):
+        ausgenommen = core._resolve_interface_list_members(in_list[1:])
+        return None if ausgenommen is None else not ausgenommen & wan
+    mitglieder = core._resolve_interface_list_members(in_list, nur_aktive=True)
+    return None if mitglieder is None else wan <= mitglieder
 
 
 def _input_firewall_check(filter_path: str = "/ip firewall filter") -> tuple[bool | None, str]:
@@ -1277,16 +1304,20 @@ def _input_firewall_check(filter_path: str = "/ip firewall filter") -> tuple[boo
     True: aktive Sperrregel gefunden (good). False: nachweislich offen -- entweder eine
     allgemeine Freigabe vor jeder Sperre, oder das Kettenende ohne jede aktive Sperrregel
     (beides warn). None: vorgelagerte Freigaben/Sprungketten mit ungeklaerter Reichweite,
-    oder die Kette selbst nicht lesbar (unknown).
+    eine Sperre, deren Wirkung aufs Internet offen bleibt, oder die Kette selbst nicht
+    lesbar (unknown).
     """
     try:
-        rows = parse_terse(core.router(f'{filter_path} print terse where chain=input'))
+        rows = parse_regeln(core.router(f'{filter_path} print terse where chain=input'))
     except (RouterCommandFailed, RouterUnreachable):
         return None, "Firewall-Regeln konnten nicht gelesen werden."
     # Eine vorherige allgemeine Freigabe beendet die Verarbeitung, bevor eine
     # spätere Sperre greifen kann. Eine solche Kette darf nie als geschützt gelten.
     metadata = {"chain", "action", "comment", "disabled", "running", "log", "log-prefix", ".id", "bytes", "packets"}
+    sperre_offen = False
     for row in rows:
+        if row.get(REGEL_UNKLAR):
+            return None, "Eine Regel lässt sich nicht sicher lesen, weil sie freien Text enthält, der wie Regelfelder aussehen kann."
         if row.get("disabled"):
             continue
         if row.get("action") == "accept" and not any(
@@ -1295,11 +1326,16 @@ def _input_firewall_check(filter_path: str = "/ip firewall filter") -> tuple[boo
             return False, "Eine allgemeine Freigabe steht vor einer wirksamen Zugriffssperre."
         if row.get("action") in ("accept", "jump", "return"):
             states = set(row.get("connection-state", "").split(","))
-            if states and states <= {"established", "related", "untracked", "invalid"}:
+            if states and states <= {"established", "related", "untracked", "invalid"} and not core._zustand_unzuverlaessig(filter_path):
                 continue
             return None, "Vorgelagerte Freigaben oder Sprungketten benötigen eine vollständige Firewall-Prüfung."
-        if _blocks_unauthorized_input(row):
+        sperrt = _blocks_unauthorized_input(row)
+        if sperrt:
             return True, "Eine aktive Sperrregel für unbekannten Zugriff ist vorhanden."
+        if sperrt is None:
+            sperre_offen = True
+    if sperre_offen:
+        return None, "Eine Sperrregel ist vorhanden, ob sie den Zugriff aus dem Internet trifft, lässt sich nicht belegen."
     return False, "Keine aktive, generell wirkende Drop/Reject-Regel in der Input-Kette gefunden."
 
 

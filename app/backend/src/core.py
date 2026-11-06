@@ -29,11 +29,14 @@ from flask import request
 
 from config import load_config
 from routeros import (
+    FLAG_I,
+    REGEL_UNKLAR,
     RouterCommandFailed,
     RouterTimeout,
     RouterUnreachable,
     close_connection,
     parse_colon,
+    parse_regeln,
     parse_terse,
     run_command,
     terse_flags,
@@ -808,7 +811,9 @@ def _bridge_filter_isolation(safe_interface: str, bridge_name: str) -> bool | No
         return None
     if output.strip() and not parse_terse(output):
         return None
-    for row in _terse_ohne_abgeschaltete(output):
+    for row in parse_regeln(output):
+        if row.get(REGEL_UNKLAR) or row.get(FLAG_I):
+            return None
         action = row.get("action", "accept")
         if action in ("passthrough", "log", "mark-packet", "set-priority"):
             continue
@@ -1150,7 +1155,7 @@ def _zustand_unzuverlaessig(filter_path: str) -> bool:
     try:
         if parse_colon(router("/ip firewall connection tracking print")).get("enabled", "").strip().lower() == "no":
             return True
-        return any(row.get("action") == "notrack" for row in _terse_ohne_abgeschaltete(router(f"{raw} print terse")))
+        return any(row.get(REGEL_UNKLAR) or row.get("action") == "notrack" for row in parse_regeln(router(f"{raw} print terse")))
     except (RouterCommandFailed, RouterUnreachable):
         return True
 
@@ -1158,10 +1163,12 @@ def _zustand_unzuverlaessig(filter_path: str) -> bool:
 def _keine_ipsec_policy() -> bool:
     """True, wenn nur die Vorlage existiert: Dann trifft eine Regel mit ipsec-policy keinen Gastverkehr."""
     try:
-        rows = _terse_ohne_abgeschaltete(router("/ip ipsec policy print terse"))
+        zeilen = router("/ip ipsec policy print terse").splitlines()
     except (RouterCommandFailed, RouterUnreachable):
         return False
-    return all(row.get("template") == "yes" for row in rows)
+    # Das Flag T ist echt. Eine echte Policy traegt kein Feld template, "comment=alt template=yes"
+    # saehe im Feld wie eine Vorlage aus (am CHR gemessen, 2026-11-06).
+    return all("T" in flags or "X" in flags for flags in map(terse_flags, filter(str.strip, zeilen)))
 
 
 def _absender_schliesst_gast_aus(row: dict, eingang: set[str], filter_path: str) -> bool:
@@ -1426,7 +1433,9 @@ def _guest_isolation(
     privat = _privat_adressiert(filter_path)
     zustand_unzuverlaessig = _zustand_unzuverlaessig(filter_path)
     invalid_gesperrt = False
-    for row in _terse_ohne_abgeschaltete(output):
+    for row in parse_regeln(output):
+        if row.get(REGEL_UNKLAR):
+            return None
         # Eine Sperre, die wir nicht ganz verstehen, oeffnet trotzdem nichts: Sie ist kein Beleg, aber auch
         # kein Grund aufzugeben. Bei einer Freigabe bleibt es unklar. Sonst waere jede Standardfirewall unklar.
         sperrt = row.get("action") in ("drop", "reject")

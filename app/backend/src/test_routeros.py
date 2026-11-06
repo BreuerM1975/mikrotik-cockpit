@@ -13,7 +13,10 @@ from routeros import (
     close_connection,
     download_file,
     ensure_host_key_trusted,
+    FLAG_I,
+    REGEL_UNKLAR,
     parse_colon,
+    parse_regeln,
     parse_terse,
     run_command,
     trust_host_key,
@@ -100,6 +103,156 @@ def _fake_completed(stdout: str, returncode: int = 0):
     result.stdout = stdout
     result.stderr = ""
     return result
+
+
+class ParseRegelnTest(unittest.TestCase):
+    """Die Zeilen sind am CHR 7.24.5 und 7.25.1 gemessen (2026-11-06), nicht ausgedacht."""
+
+    def _eine(self, zeile):
+        rows = parse_regeln(zeile + "\n")
+        self.assertEqual(len(rows), 1)
+        return rows[0]
+
+    def test_kommentar_erfindet_kein_ziel(self):
+        row = self._eine("0   comment=alt out-interface=ether1 chain=forward action=accept in-interface=vlan20")
+        self.assertNotIn("out-interface", row)
+        self.assertEqual(row["comment"], "alt out-interface=ether1")
+        self.assertEqual(row["in-interface"], "vlan20")
+        self.assertEqual(row["action"], "accept")
+
+    def test_kommentar_erfindet_keinen_eingang_und_keine_aktion(self):
+        row = self._eine("1   comment=action=drop in-interface=vlan20 out-interface-list=LAN chain=forward action=accept")
+        self.assertEqual(row["action"], "accept")
+        self.assertNotIn("in-interface", row)
+        self.assertNotIn("out-interface-list", row)
+
+    def test_kommentar_erfindet_keinen_zustand(self):
+        row = self._eine("4   comment=alt connection-state=established chain=forward action=accept")
+        self.assertNotIn("connection-state", row)
+
+    def test_echte_felder_bleiben_neben_gleichnamigem_kommentar(self):
+        row = self._eine("2   comment=in-interface=ether9 out-interface-list=WAN chain=forward action=drop in-interface=vlan20 out-interface-list=LAN")
+        self.assertEqual(row["in-interface"], "vlan20")
+        self.assertEqual(row["out-interface-list"], "LAN")
+
+    def test_kommentar_mit_gleichheitszeichen_am_ende(self):
+        self.assertEqual(self._eine("6   comment=endet mit = chain=forward action=accept")["comment"], "endet mit =")
+
+    def test_kommentar_mit_fuehrendem_leerzeichen(self):
+        row = self._eine("0 comment= fuehrend chain=forward action=accept in-interface=vlan20")
+        self.assertEqual(row["comment"], " fuehrend")
+        self.assertEqual(row["in-interface"], "vlan20")
+
+    def test_zeile_ohne_kommentar(self):
+        row = self._eine("0 chain=forward action=drop in-interface=guest out-interface-list=LAN")
+        self.assertEqual(row["out-interface-list"], "LAN")
+        self.assertNotIn("comment", row)
+
+    def test_log_prefix_bleibt_lesbar(self):
+        row = self._eine("0 comment=k4 chain=forward action=drop in-interface=vlan20 log=yes log-prefix=nur text")
+        self.assertEqual(row["log-prefix"], "nur text")
+        self.assertEqual(row["log"], "yes")
+        self.assertEqual(row["in-interface"], "vlan20")
+
+    def test_leeres_log_prefix_bleibt_lesbar(self):
+        self.assertEqual(self._eine("0 chain=forward action=drop log=no log-prefix=")["log-prefix"], "")
+
+    def test_felder_hinter_leerem_log_prefix_sind_echt(self):
+        row = self._eine("0 chain=forward action=accept log=no log-prefix= ipsec-policy=in,ipsec tls-host=a.example")
+        self.assertEqual(row["ipsec-policy"], "in,ipsec")
+        self.assertEqual(row["tls-host"], "a.example")
+        self.assertEqual(row["log-prefix"], "")
+
+    def test_feld_im_log_prefix_ist_unklar(self):
+        self.assertEqual(self._eine("0 chain=forward action=accept log=yes log-prefix=l out-interface=ether1"), {REGEL_UNKLAR: "ja"})
+
+    def test_praefix_das_wie_ein_feld_beginnt_ist_unklar(self):
+        self.assertEqual(self._eine("0 chain=forward action=accept log=yes log-prefix=out-interface=ether1"), {REGEL_UNKLAR: "ja"})
+
+    def test_feld_hinter_log_prefix_verschwindet_nicht(self):
+        for zeile in (
+            "0 chain=input action=drop log=yes log-prefix=x protocol=tcp",
+            "4   chain=forward action=accept protocol=tcp dscp=5 log=yes log-prefix=z ipsec-policy=in,ipsec tls-host=a.example",
+            "0 chain=forward action=accept log=yes log-prefix=x chain=input",
+        ):
+            with self.subTest(zeile=zeile):
+                self.assertEqual(self._eine(zeile), {REGEL_UNKLAR: "ja"})
+
+    def test_content_ist_unklar(self):
+        self.assertEqual(self._eine("0 chain=forward action=accept in-interface=guest content=x out-interface=ether1"), {REGEL_UNKLAR: "ja"})
+        self.assertEqual(self._eine("3   chain=input action=accept protocol=icmp content=a b=c log=yes log-prefix=z"), {REGEL_UNKLAR: "ja"})
+        self.assertEqual(self._eine("3   chain=input action=accept log=no log-prefix= content=a b=c"), {REGEL_UNKLAR: "ja"})
+
+    def test_content_nur_im_kommentar_ist_lesbar(self):
+        self.assertEqual(self._eine("0 comment=alt content=x chain=forward action=accept")["action"], "accept")
+
+    def test_steuerzeichen_trennt_keine_zeile(self):
+        self.assertEqual(self._eine("0 comment=a\x0cb chain=forward action=drop")["comment"], "a\x0cb")
+        self.assertEqual(self._eine("0 chain=forward action=log log=yes log-prefix=a\x0cchain=forward action=drop in-interface=guest"), {REGEL_UNKLAR: "ja"})
+
+    def test_zeile_ohne_nummer_ist_unklar(self):
+        self.assertEqual(self._eine("X chain=forward action=accept"), {REGEL_UNKLAR: "ja"})
+        self.assertEqual(self._eine("chain=forward action=accept"), {REGEL_UNKLAR: "ja"})
+
+    def test_zwei_chain_im_kommentar_sind_unklar(self):
+        row = self._eine("0 comment=alt chain=input action=drop chain=forward action=accept in-interface=vlan20")
+        self.assertEqual(row, {REGEL_UNKLAR: "ja"})
+
+    def test_chain_im_log_prefix_neben_kommentar_ist_unklar(self):
+        row = self._eine("0 comment=k chain=forward action=accept log=yes log-prefix=x chain=input")
+        self.assertEqual(row, {REGEL_UNKLAR: "ja"})
+
+    def test_kommentar_ohne_chain_ist_unklar(self):
+        self.assertEqual(self._eine("0 comment=k action=accept"), {REGEL_UNKLAR: "ja"})
+
+    def test_kommentar_hinten_ohne_weitere_felder_bleibt_lesbar(self):
+        row = self._eine("0 chain=forward action=drop in-interface=guest comment=Gast sperren")
+        self.assertEqual(row["comment"], "Gast sperren")
+        self.assertEqual(row["in-interface"], "guest")
+
+    def test_kommentar_in_der_mitte_mit_feldern_dahinter_ist_unklar(self):
+        self.assertEqual(self._eine("0 chain=forward comment=alt out-interface=ether1 action=accept"), {REGEL_UNKLAR: "ja"})
+
+    def test_x_faellt_weg_kommentar_taeuscht_kein_x_vor(self):
+        self.assertEqual(parse_regeln("3 X comment=k5 x=y chain=forward action=accept\n"), [])
+        self.assertEqual(self._eine("0 comment=alt disabled=true chain=forward action=accept")["disabled"], False)
+
+    def test_geloeschtes_interface_mit_flag_i_faellt_weg(self):
+        for zeile in (
+            "1 I comment=no interface,ziel chain=forward action=drop in-interface=vlan20 out-interface=*A",
+            "1 I comment=no interface chain=forward action=drop in-interface=vlan20 out-interface=!*A",
+            "4 I comment=no interface chain=forward action=drop in-interface=*A out-interface-list=LAN",
+            "4 I comment=no interface chain=forward action=drop in-bridge-port=*B",
+            "4 I comment=no interface chain=forward action=drop out-bridge-port=*B",
+        ):
+            with self.subTest(zeile=zeile):
+                self.assertEqual(parse_regeln(zeile + "\n"), [])
+
+    def test_flag_i_ohne_meldung_no_interface_bleibt_markiert(self):
+        for zeile, feld in (
+            ("0 I comment=pppoe-out1 not ready chain=forward action=drop in-interface=guest out-interface=!pppoe-out1", "out-interface"),
+            ("0 I comment=lte1 not ready chain=forward action=accept in-interface=*B", "in-interface"),
+            ("0 I chain=forward action=drop in-interface=vlan20 out-interface=*A", "out-interface"),
+            ("1 I comment=inactive time,k2 chain=forward action=accept in-interface=vlan20 time=0s-1s", "in-interface"),
+            ("7 I comment=x chain=forward action=drop in-interface=vlan20", "in-interface"),
+            ("7 I comment=x chain=forward action=drop out-interface=!ether1 in-interface=vlan20", "out-interface"),
+        ):
+            with self.subTest(zeile=zeile):
+                row = self._eine(zeile)
+                self.assertEqual(row[FLAG_I], "ja")
+                self.assertIn(feld, row)
+
+    def test_ohne_flag_i_keine_markierung(self):
+        self.assertNotIn(FLAG_I, self._eine("0 comment=no interface chain=forward action=drop in-interface=guest"))
+
+    def test_meldung_no_interface_ohne_stern_bleibt_markiert(self):
+        self.assertEqual(self._eine("0 I comment=no interface chain=forward action=drop in-interface=guest")[FLAG_I], "ja")
+
+    def test_geloeschtes_interface_ohne_flag_i_bleibt_drin(self):
+        self.assertEqual(self._eine("2   chain=forward action=drop in-interface=vlan20 out-interface=*A")["out-interface"], "*A")
+
+    def test_leere_und_fremde_zeilen(self):
+        self.assertEqual(parse_regeln("\n   \nFlags: I - INVALID\n=x\n"), [])
 
 
 class RunCommandErrorDetectionTest(unittest.TestCase):

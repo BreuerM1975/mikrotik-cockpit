@@ -185,6 +185,162 @@ class AbgeschalteteEintraegeTests(unittest.TestCase):
                 "1 chain=forward action=drop in-interface=guest\n",
         }), False)
 
+    FILTER = "/ip firewall filter print terse where chain=forward"
+    LAN_BRIDGE = {
+        '/interface list member print terse where list="LAN"': "0 list=LAN interface=bridge\n",
+        '/interface list member print terse where list="WAN"': "0 list=WAN interface=ether1\n",
+        '/ip address print terse': "0 address=192.168.88.1/24 interface=bridge\n",
+    }
+    SPERRE = "9 chain=forward action=drop in-interface=guest out-interface-list=LAN\n"
+
+    def test_kommentar_taeuscht_kein_internet_ziel_vor(self):
+        self.assertIs(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 comment=alt out-interface=ether1 chain=forward action=accept in-interface=guest\n" + self.SPERRE}), False)
+
+    def test_kommentar_taeuscht_keinen_fremden_eingang_vor(self):
+        self.assertIs(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 comment=alt in-interface=ether9 chain=forward action=accept\n" + self.SPERRE}), False)
+
+    def test_kommentar_taeuscht_keine_bestehenden_verbindungen_vor(self):
+        self.assertIs(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 comment=alt connection-state=established chain=forward action=accept\n" + self.SPERRE}), False)
+
+    def test_kommentar_taeuscht_keine_sperre_auf_lan_vor(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 comment=alt out-interface-list=LAN chain=forward action=drop in-interface=guest out-interface=ether5\n"}))
+
+    def test_kommentar_mit_gleichheitszeichen_entwertet_keine_sperre(self):
+        self.assertIs(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 comment=alt out-interface-list=WAN chain=forward action=drop in-interface=guest\n"}), True)
+
+    def test_log_prefix_taeuscht_kein_internet_ziel_vor(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 chain=forward action=accept in-interface=guest log=yes log-prefix=x out-interface=ether1\n" + self.SPERRE}))
+
+    def test_content_taeuscht_kein_internet_ziel_vor(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 chain=forward action=accept in-interface=guest content=x out-interface=ether1\n" + self.SPERRE}))
+
+    def _mit_ipsec(self, policies):
+        return self._isolation({**self.LAN_BRIDGE, "/ip ipsec policy print terse": policies, self.FILTER:
+            "0 chain=forward action=accept log=no log-prefix= ipsec-policy=in,ipsec\n" + self.SPERRE})
+
+    def test_ipsec_nur_vorlage_laesst_die_freigabe_liegen(self):
+        self.assertIs(self._mit_ipsec("0 T* group=default src-address=::/0 dst-address=::/0 protocol=all proposal=default template=yes\n"), True)
+
+    def test_ipsec_kommentar_taeuscht_keine_vorlage_vor(self):
+        self.assertIsNone(self._mit_ipsec(
+            "0 T* group=default template=yes\n"
+            "1    comment=alt template=yes peer=a tunnel=yes group=default src-address=10.0.0.0/24\n"))
+
+    def test_ipsec_abgeschaltete_policy_zaehlt_nicht(self):
+        self.assertIs(self._mit_ipsec("0 T* group=default template=yes\n1 X  peer=a tunnel=yes\n"), True)
+
+    def test_ipsec_echte_policy_bleibt_unklar(self):
+        self.assertIsNone(self._mit_ipsec("0 T* group=default template=yes\n1    peer=a tunnel=yes\n"))
+
+    def test_sperre_mit_flag_i_belegt_nichts(self):
+        for zeile in (
+            "0 I comment=x chain=forward action=drop in-interface=guest out-interface-list=LAN\n",
+            "0 I comment=pppoe-out1 not ready chain=forward action=drop in-interface=guest out-interface=!pppoe-out1\n",
+        ):
+            with self.subTest(zeile=zeile):
+                self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER: zeile}))
+
+    def test_freigabe_mit_flag_i_bleibt_unklar(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 I comment=x chain=forward action=accept in-interface=guest out-interface-list=LAN\n" + self.SPERRE}))
+
+    def test_raw_log_prefix_verdeckt_kein_notrack(self):
+        self.assertIs(self._raw("0 chain=prerouting action=notrack log=yes log-prefix=x action=accept\n"), True)
+
+    def test_raw_kommentar_taeuscht_kein_notrack_vor(self):
+        self.assertIs(self._raw("0 comment=alt action=notrack chain=prerouting action=accept\n"), False)
+
+    def test_raw_unlesbare_zeile_ist_unzuverlaessig(self):
+        self.assertIs(self._raw("0 comment=a chain=b chain=prerouting action=accept\n"), True)
+
+    def test_raw_echtes_notrack(self):
+        self.assertIs(self._raw("0 chain=prerouting action=notrack\n"), True)
+
+    def test_raw_ohne_notrack(self):
+        self.assertIs(self._raw("0 chain=prerouting action=accept\n"), False)
+
+    def _raw(self, zeilen):
+        antworten = {"/ip firewall raw print terse": zeilen, "/ip firewall connection tracking print": "enabled: auto\n"}
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            return core._zustand_unzuverlaessig("/ip firewall filter")
+
+    def test_unlesbare_regelzeile_macht_das_urteil_unklar(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 comment=alt chain=input action=drop chain=forward action=accept in-interface=guest out-interface=ether1\n" + self.SPERRE}))
+
+    def test_sperre_davor_bleibt_gueltig_vor_unlesbarer_zeile(self):
+        self.assertIs(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            self.SPERRE + "1 comment=alt chain=input action=drop chain=forward action=accept\n"}), True)
+
+    def test_sperre_mit_negiertem_geloeschtem_ziel_belegt_nichts(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 I comment=no interface chain=forward action=drop in-interface=guest out-interface=!*A\n"}))
+
+    def test_freigabe_auf_geloeschtes_interface_oeffnet_nichts(self):
+        self.assertIs(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 I comment=no interface chain=forward action=accept in-interface=guest out-interface=*A\n" + self.SPERRE}), True)
+
+    def test_freigabe_ausserhalb_ihres_zeitfensters_bleibt_unklar(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 I comment=inactive time chain=forward action=accept in-interface=guest out-interface-list=LAN time=0s-1s\n" + self.SPERRE}))
+
+    def test_sperre_ausserhalb_ihres_zeitfensters_belegt_nichts(self):
+        self.assertIsNone(self._isolation({**self.LAN_BRIDGE, self.FILTER:
+            "0 I comment=inactive time chain=forward action=drop in-interface=guest out-interface-list=LAN time=0s-1s\n"}))
+
+    def test_bridge_filter_kommentar_taeuscht_keinen_fremden_eingang_vor(self):
+        antworten = {
+            **self.LAN_BRIDGE,
+            '/interface bridge port print terse where bridge="bridge"':
+                "0 bridge=bridge interface=guest\n1 bridge=bridge interface=ether2\n",
+            "/interface bridge filter print terse where chain=forward":
+                "0 comment=alt in-interface=ether9 chain=forward action=accept\n"
+                "1 chain=forward action=drop in-interface=guest\n",
+        }
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertIs(core._bridge_filter_isolation("guest", "bridge"), False)
+
+    def test_bridge_filter_sperre_mit_flag_i_belegt_nichts(self):
+        antworten = {
+            **self.LAN_BRIDGE,
+            '/interface bridge port print terse where bridge="bridge"':
+                "0 bridge=bridge interface=guest\n1 bridge=bridge interface=ether2\n",
+            "/interface bridge filter print terse where chain=forward":
+                "0 I comment=x chain=forward action=drop in-interface=guest\n",
+        }
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertIsNone(core._bridge_filter_isolation("guest", "bridge"))
+
+    def test_bridge_filter_freigabe_mit_flag_i_ist_unklar_nicht_offen(self):
+        antworten = {
+            **self.LAN_BRIDGE,
+            '/interface bridge port print terse where bridge="bridge"':
+                "0 bridge=bridge interface=guest\n1 bridge=bridge interface=ether2\n",
+            "/interface bridge filter print terse where chain=forward":
+                "0 I comment=x chain=forward action=accept in-interface=guest out-interface=ether2\n"
+                "1 chain=forward action=drop in-interface=guest\n",
+        }
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertIsNone(core._bridge_filter_isolation("guest", "bridge"))
+
+    def test_bridge_filter_unlesbare_zeile_ist_unklar(self):
+        antworten = {
+            **self.LAN_BRIDGE,
+            '/interface bridge port print terse where bridge="bridge"':
+                "0 bridge=bridge interface=guest\n1 bridge=bridge interface=ether2\n",
+            "/interface bridge filter print terse where chain=forward":
+                "0 comment=x chain=y chain=forward action=accept\n1 chain=forward action=drop in-interface=guest\n",
+        }
+        with patch.object(core, "router", side_effect=lambda c: antworten.get(c, "")):
+            self.assertIsNone(core._bridge_filter_isolation("guest", "bridge"))
+
     def test_kommentar_taeuscht_keine_abgeschaltete_adresszeile_vor(self):
         with patch.object(core, "router", side_effect=lambda c: "" if "dynamic=yes" in c else
                           "0 comment=notiz disabled=true list=a address=192.0.2.0/24 dynamic=no\n"):

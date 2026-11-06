@@ -534,3 +534,69 @@ def parse_terse(output: str) -> list[dict]:
         row["disabled"] = row.get("disabled", "").lower() == "true" or "X" in flags
         rows.append(row)
     return rows
+
+
+# Eine Regelzeile, deren echte Felder sich nicht sicher von freiem Text trennen lassen.
+REGEL_UNKLAR = "regel-unklar"
+# Eine Regel mit Flag I, von der offen ist, ob sie wirkt. Kein bekanntes Feld, also auch kein Beleg.
+FLAG_I = "flag-i"
+_GELOESCHTES_INTERFACE = ("in-interface", "out-interface", "in-bridge-port", "out-bridge-port")
+
+
+def parse_regeln(output: str) -> list[dict]:
+    """Wirksame Zeilen aus Firewall und Bridge-Filter, Felder getrennt von freiem Text.
+
+    parse_terse() sieht in "comment=alt out-interface=ether1" ein zweites Feld. Fehlt der Regel das
+    echte Feld, bleibt das falsche stehen. Gemessen am CHR 7.24.5 und 7.25.1 (2026-11-06) in filter,
+    raw, nat, IPv6 und Bridge-Filter: comment steht vorn, danach als erstes echtes Feld chain.
+    log-prefix steht fast am Ende, dahinter folgen aber echte Felder wie ipsec-policy und tls-host. Bei
+    leerem Praefix ("log-prefix= ipsec-policy=in,ipsec") ist das eindeutig. Eine Zeile traegt nur
+    REGEL_UNKLAR, und der Leser muss "unklar" melden, wenn " chain=" mehrfach vorkommt, wenn ein nicht
+    leeres Praefix wie ein Feld aussieht oder wenn sie content= hat, einen Wert aus freiem Text.
+
+    Flag X faellt weg. Flag I faellt nur weg, wenn RouterOS selbst "no interface" meldet und der Wert
+    auf ein geloeschtes Interface zeigt: Solche Regeln wirken nicht. Sonst bekommt die Zeile FLAG_I:
+    Mit time= wird sie spaeter wieder aktiv, bei "<interface> not ready" sobald das Interface zurueck
+    ist. Eine Sperre belegt damit nichts, und eine Freigabe bleibt offen.
+    """
+    rows = []
+    # Nicht splitlines(): Das trennt auch an Steuerzeichen, die in freiem Text stehen koennen.
+    for zeile in output.split("\n"):
+        kopf, gleich, rest = zeile.strip().partition("=")
+        if not gleich or not kopf.split():
+            continue
+        if not kopf.split()[0].isdigit():
+            rows.append({REGEL_UNKLAR: "ja"})
+            continue
+        flags = terse_flags(zeile)
+        if "X" in flags:
+            continue
+        rumpf = f"{kopf.split()[-1]}={rest}"
+        kommentar = None
+        if rumpf.startswith("comment="):
+            stuecke = rumpf.split(" chain=")
+            if len(stuecke) != 2:
+                rows.append({REGEL_UNKLAR: "ja"})
+                continue
+            kommentar = stuecke[0].removeprefix("comment=")
+            rumpf = f"chain={stuecke[1]}"
+        felder, trenner, praefix = rumpf.partition(" log-prefix=")
+        if praefix.startswith(" "):
+            felder, praefix = felder + praefix, ""
+        # Nicht gemessene Reihenfolge: Steht hinter dem Kommentar noch ein Feld, ist offen, was davon echt ist.
+        _, mitte, hinten = felder.partition(" comment=")
+        if (mitte and re.search(r"\s[\w.-]+=", hinten)) or re.search(r"(^|\s)[\w.-]+=", praefix) or " content=" in felder:
+            rows.append({REGEL_UNKLAR: "ja"})
+            continue
+        for row in parse_terse(f"0 {flags} {felder}"):
+            if kommentar is not None:
+                row["comment"] = kommentar
+            if trenner:
+                row["log-prefix"] = praefix
+            if "I" in flags:
+                if row.get("comment", "").startswith("no interface") and any(
+                        row.get(feld, "").lstrip("!").startswith("*") for feld in _GELOESCHTES_INTERFACE):
+                    continue
+                row[FLAG_I] = "ja"
+            rows.append(row)
+    return rows
