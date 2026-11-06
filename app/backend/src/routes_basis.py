@@ -29,6 +29,8 @@ Die Gastnetz-Isolationspruefung fuer `/security-check` (Basis) und `_fw_ordered_
 Firewall gehoeren -- diese Helfer liegen deshalb in `core.py`, nicht hier.
 """
 
+import contextvars
+import functools
 import ipaddress
 import json
 import os
@@ -43,6 +45,7 @@ from flask import Blueprint, current_app, jsonify, request, send_file
 
 import core
 from routeros import (
+    FLAG_I,
     REGEL_UNKLAR,
     HostKeyChanged,
     HostKeyUnknown,
@@ -56,6 +59,7 @@ from routeros import (
     parse_regeln,
     parse_terse,
     run_command,
+    terse_flags,
     trust_host_key,
     upload_file,
 )
@@ -410,10 +414,10 @@ def _wan_interface() -> str:
 
     candidates = []
     for row in parse_terse(core.router('/ip dhcp-client print terse where status="bound"')):
-        if row.get("interface"):
+        if row.get("interface") and core._name_sicher(row["interface"]):
             candidates.append(row["interface"])
     for row in parse_terse(core.router('/interface pppoe-client print terse')):
-        if row.get("name") and (row.get("running") or row.get("status") == "running"):
+        if row.get("name") and core._name_sicher(row["name"]) and (row.get("running") or row.get("status") == "running"):
             candidates.append(row["name"])
     candidates = list(dict.fromkeys(candidates))
     if len(candidates) == 1:
@@ -1242,7 +1246,7 @@ def _security_check_service_hygiene() -> dict:
                      "Risiko dar."}
 
 
-def _blocks_unauthorized_input(row: dict) -> bool | None:
+def _blocks_unauthorized_input(row: dict, filter_path: str = "/ip firewall filter") -> bool | None:
     """Ob eine Input-Regel tatsaechlich unbekannten Zugriff generell abweist.
 
     Audit Runde 5, 09.09.: die alte Pruefung zaehlte JEDE aktive drop/reject-Regel,
@@ -1254,6 +1258,9 @@ def _blocks_unauthorized_input(row: dict) -> bool | None:
         return False
     if row.get("action") not in ("drop", "reject"):
         return False
+    if row.get(FLAG_I):
+        # Gemessen: Mit "not ready" oder einer VRF wirkt die Regel gerade nicht, spaeter vielleicht wieder.
+        return None
     conn_state = row.get("connection-state", "")
     if conn_state and "new" not in conn_state.split(","):
         # z.B. defconf "drop invalid" -- greift nur bei technisch kaputten Paketen,
@@ -1262,35 +1269,391 @@ def _blocks_unauthorized_input(row: dict) -> bool | None:
     if core._has_unresolved_matchers(row, {"in-interface", "in-interface-list", "connection-state"}):
         # Eng eingeschraenkte Regel (z.B. nur ein Port) deckt keinen generellen Schutz ab.
         return False
-    return _sperre_deckt_wan(row)
+    # Ohne verlaessliches Tracking greift "connection-state=new" nicht (gemessen, siehe core._zustand_unzuverlaessig).
+    if conn_state and core._zustand_unzuverlaessig(filter_path):
+        return None
+    return _sperre_deckt_wan(row, filter_path)
 
 
-def _sperre_deckt_wan(row: dict) -> bool | None:
-    """Trifft die Sperre den Zugriff aus dem Internet? None: Das laesst sich nicht belegen.
+_NAME_SICHER = re.compile(r"[\w.@-]+")
+# Antworten eines Prueflaufs: Sonst liest eine Kette mit 30 Freigaben hunderte Male dasselbe, und die Teile der
+# Antwort stammen aus verschiedenen Staenden. Je Lauf, weil das Cockpit mehrere Router zugleich bedient.
+_PRUEFLAUF: contextvars.ContextVar[dict | None] = contextvars.ContextVar("cockpit_prueflauf", default=None)
 
-    Eine Sperre auf einem beliebigen Port schuetzt den Router nicht. Ohne lesbare Liste WAN ist offen,
-    ob "in-interface=ether1" der Internetzugang ist.
+
+def _einmal_je_prueflauf(funktion):
+    @functools.wraps(funktion)
+    def mit_speicher(*args):
+        speicher = _PRUEFLAUF.get()
+        if speicher is None:
+            return funktion(*args)
+        schluessel = (funktion.__name__, args)
+        if schluessel not in speicher:
+            speicher[schluessel] = funktion(*args)
+        return speicher[schluessel]
+    return mit_speicher
+
+
+def _als_prueflauf(funktion):
+    """Startet den Speicher, wenn noch keiner laeuft. Danach ist er weg, der naechste Lauf liest frisch."""
+    @functools.wraps(funktion)
+    def mit_lauf(*args, **kwargs):
+        if _PRUEFLAUF.get() is not None:
+            return funktion(*args, **kwargs)
+        token = _PRUEFLAUF.set({})
+        try:
+            return funktion(*args, **kwargs)
+        finally:
+            _PRUEFLAUF.reset(token)
+    return mit_lauf
+
+
+@_einmal_je_prueflauf
+def _standard_ausgaenge(filter_path: str) -> set[str] | None:
+    """Die Interfaces aller Standardrouten, auch einer inaktiven Reserve. None: Das laesst sich nicht belegen.
+
+    Am CHR 7.25.1 gemessen (2026-11-06): Eine erreichbare Reserve traegt immediate-gw, eine Route mit
+    unerreichbarem Gateway hat es leer, ein Blackhole fuehrt nirgends hin. "disabled=no" im where liefert nichts,
+    "!disabled" ist richtig. Der Kommentar steht vor dst-address, hinter dem letzten dst-address ist die Zeile
+    sicher lesbar.
     """
+    route, ziel = ("/ipv6 route", "::/0") if filter_path.startswith("/ipv6") else ("/ip route", "0.0.0.0/0")
+    namen: set[str] = set()
+    try:
+        for zeile in core.router(f'{route} print terse where dst-address="{ziel}" and !disabled').splitlines():
+            if not zeile.strip():
+                continue
+            felder = zeile.rpartition(" dst-address=")[2].split()
+            if "blackhole" in felder:
+                continue
+            werte = dict(feld.split("=", 1) for feld in felder if "=" in feld)
+            for gw in (werte.get("immediate-gw") or werte.get("gateway", "")).split(","):
+                namen.add(gw.rpartition("%")[2])
+        if not all(_NAME_SICHER.fullmatch(name) for name in namen):
+            return None
+        if not all(parse_terse(core.router(f'/interface print terse where name="{name}"')) for name in namen):
+            return None
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return None
+    return namen
+
+
+@_einmal_je_prueflauf
+def _oeffentliche_interfaces() -> set[str] | None:
+    """Interfaces mit oeffentlicher IPv4-Adresse: Dort ist der Router aus dem Internet erreichbar, auch ohne Route.
+
+    Bei IPv6 sagt das nichts, weil auch Hausnetz-Interfaces globale Adressen tragen.
+    """
+    try:
+        rows = parse_terse(core.router("/ip address print terse"))
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return None
+    namen = set()
+    for row in rows:
+        try:
+            if ipaddress.ip_address(row.get("address", "").split("/")[0]).is_global:
+                namen.add(row.get("interface", ""))
+        except ValueError:
+            return None
+    return namen
+
+
+def _uplink_nicht_auswertbar(uplinks: set[str]) -> bool:
+    """Ein Anschluss in einer VRF oder als Bridge-Port trifft andere in-interface-Werte, als sein Name sagt."""
+    if not all(_NAME_SICHER.fullmatch(name) for name in uplinks):
+        return True
+    try:
+        for vrf in parse_terse(core.router("/ip vrf print terse")):
+            if vrf.get("name") != "main" and uplinks & set(vrf.get("interfaces", "").split(",")):
+                return True
+        return any(parse_terse(core.router(f'/interface bridge port print terse where interface="{name}"')) for name in uplinks)
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return True
+
+
+@_einmal_je_prueflauf
+def _detect_internet_listen() -> set[str] | None:
+    """Listen, die Detect Internet fuellt. Laut Doku wechseln die Mitglieder nach jedem Linkwechsel. None: nicht lesbar."""
+    try:
+        werte = parse_colon(core.router("/interface detect-internet print"))
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return None
+    return {werte.get(feld, "").strip() for feld in ("lan-interface-list", "wan-interface-list", "internet-interface-list")}
+
+
+@_einmal_je_prueflauf
+def _uplinks(filter_path: str, beide_familien: bool = False) -> set[str] | None:
+    """Alle Wege ins Internet: Liste WAN, Standardrouten und oeffentliche Adressen zusammen.
+
+    None: nicht sicher bestimmbar. Leer: Das Geraet hat erkennbar keinen Weg. Die Liste allein genuegt nicht, weil
+    sie veralten kann: Ein neuer PPPoE-Zugang fehlt dort oft, das Internet kommt aber genau auf ihm an. Eine
+    Freigabe "von innen" muss alle Wege meiden, auch die der anderen Adressfamilie.
+    """
+    detect = _detect_internet_listen()
+    if detect is None or "WAN" in detect:
+        return None
+    wan = core._resolve_interface_list_members("WAN")
+    pfade = ("/ip firewall filter", "/ipv6 firewall filter") if beide_familien else (filter_path,)
+    wege = [_standard_ausgaenge(pfad) for pfad in pfade]
+    if any(not pfad.startswith("/ipv6") for pfad in pfade):
+        wege.append(_oeffentliche_interfaces())
+    if wan is None or None in wege:
+        return None
+    gesamt = wan.union(*wege)
+    return None if _uplink_nicht_auswertbar(gesamt) else gesamt
+
+
+def _deckung(getroffen: set[str], uplinks: set[str]) -> bool | None:
+    """True: alle Wege ins Internet getroffen. False: keiner. None: nur ein Teil, das reicht nicht als Beleg."""
+    if uplinks <= getroffen:
+        return True
+    return None if uplinks & getroffen else False
+
+
+def _regel_trifft(row: dict, uplinks: set[str]) -> set[str] | None:
+    """Welche Wege ins Internet trifft die Interface-Bedingung einer Regel? None: Das laesst sich nicht belegen."""
     in_list, in_if = row.get("in-interface-list"), row.get("in-interface")
     if not in_list and not in_if:
-        return True
+        return set(uplinks)
     if in_list and in_if:
         return None
-    if in_list in ("WAN", "!LAN"):
-        return True
-    wan = core._resolve_interface_list_members("WAN")
-    if not wan:
-        return None
     if in_if:
-        return in_if[1:] not in wan if in_if.startswith("!") else wan <= {in_if}
+        if in_if.lstrip("!").startswith("all"):
+            return None
+        return uplinks - {in_if[1:]} if in_if.startswith("!") else uplinks & {in_if}
+    name = in_list.lstrip("!")
+    detect = _detect_internet_listen()
+    if detect is None or name in detect:
+        return None
     if in_list.startswith("!"):
-        ausgenommen = core._resolve_interface_list_members(in_list[1:])
-        return None if ausgenommen is None else not ausgenommen & wan
-    mitglieder = core._resolve_interface_list_members(in_list, nur_aktive=True)
-    return None if mitglieder is None else wan <= mitglieder
+        ausgenommen = core._resolve_interface_list_members(name)
+        return None if ausgenommen is None else uplinks - ausgenommen
+    mitglieder = core._resolve_interface_list_members(name, nur_aktive=True)
+    return None if mitglieder is None else uplinks & mitglieder
 
 
+def _sperre_deckt_wan(row: dict, filter_path: str = "/ip firewall filter") -> bool | None:
+    """Trifft die Sperre den Zugriff aus dem Internet? None: Das laesst sich nicht belegen.
+
+    Eine Sperre auf einem beliebigen Port schuetzt den Router nicht.
+    """
+    if not row.get("in-interface-list") and not row.get("in-interface"):
+        return True
+    uplinks = _uplinks(filter_path)
+    if not uplinks:
+        return None
+    getroffen = _regel_trifft(row, uplinks)
+    return None if getroffen is None else _deckung(getroffen, uplinks)
+
+
+# Protokolle, die keinen Verwaltungsdienst des Routers erreichen.
+_PROTOKOLLE_OHNE_DIENST = {"icmp", "icmpv6", "ipsec-ah", "ipsec-esp"}
+_ZIEL_LOOPBACK = {"127.0.0.1", "127.0.0.1/32", "::1", "::1/128"}
+# Standardports von Router-Diensten. Dazu kommen die Ports aus /ip service, weil man sie umlegen kann.
+_VERWALTUNGSPORTS = {20, 21, 22, 23, 53, 69, 80, 161, 443, 445, 1080, 1812, 1813, 2000, 2049, 2828, 3260, 3799, 4420,
+                     5246, 5247, 5351, 5678, 8080, 8291, 8728, 8729}
+# Dynamische Eintraege ohne Verwaltung, am CHR gemessen. Auch SOCKS und Web-Proxy stehen dynamisch dort, die zaehlen.
+_DYNAMISCH_OHNE_VERWALTUNG = {"ntp", "ipsec", "dhcp", "dhcpclient", "ovpn-server", "l2tp", "ppp", "sstp-server"}
+_REGEL_METADATEN = {"chain", "action", "comment", "disabled", "running", "log", "log-prefix", ".id", "bytes", "packets"}
+_FELDER_EINER_DIENSTFREIGABE = {"protocol", "dst-port", "in-interface", "in-interface-list"}
+
+
+def _port_menge(wert: str) -> set[int] | None:
+    ports: set[int] = set()
+    for teil in wert.split(","):
+        von, _, bis = teil.partition("-")
+        if not von.isdigit() or (bis and not bis.isdigit()):
+            return None
+        ports.update(range(int(von), int(bis or von) + 1))
+    return ports
+
+
+@_einmal_je_prueflauf
+def _dienstzeilen() -> list[tuple[str, dict]]:
+    try:
+        zeilen = core.router("/ip service print terse").splitlines()
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return []
+    return [(terse_flags(zeile), row) for zeile in zeilen if zeile.strip() for row in parse_terse(zeile)]
+
+
+def _verwaltungsports() -> set[int] | None:
+    dienste = _dienstzeilen()
+    if not dienste:
+        return None
+    ports = set(_VERWALTUNGSPORTS)
+    for flags, row in dienste:
+        name = row.get("name", "")
+        if "c" in flags or ("D" in flags and (name in _DYNAMISCH_OHNE_VERWALTUNG or name.startswith("wireguard-"))):
+            continue
+        if row.get("port", "").isdigit():
+            ports.add(int(row["port"]))
+    return ports
+
+
+def _offene_dienste() -> set[tuple[str, int]]:
+    """Eingeschaltete Verwaltungsdienste ohne Adressbeschraenkung als (Protokoll, Port)."""
+    offen = set()
+    for flags, row in _dienstzeilen():
+        # "address" ist laut Doku der fruehere Name von "available-from".
+        if not set(flags) & set("XDc") and not row.get("available-from") and not row.get("address") and row.get("port", "").isdigit():
+            offen.add((row.get("proto", "tcp"), int(row["port"])))
+    return offen
+
+
+def _freigabe_oeffnet_verwaltung(row: dict, filter_path: str, gedeckt: set[str]) -> bool:
+    """Belegt diese Freigabe, dass die Verwaltung aus dem Internet erreichbar ist?
+
+    Nur Protokoll, Zielport und Eingang duerfen die Regel einschraenken. Ein Weg, den eine fruehere Sperre schon
+    trifft, zaehlt nicht: Dort kommt die Freigabe nie an.
+    """
+    if any(wert for feld, wert in row.items() if feld not in _REGEL_METADATEN | _FELDER_EINER_DIENSTFREIGABE):
+        return False
+    uplinks = _uplinks(filter_path)
+    getroffen = _regel_trifft(row, uplinks) if uplinks else None
+    if not getroffen or not getroffen - gedeckt:
+        return False
+    protokoll, port_text = row.get("protocol", ""), row.get("dst-port", "")
+    if port_text and not protokoll:
+        return False
+    ports = _port_menge(port_text) if port_text else None
+    if port_text and ports is None:
+        return False
+    return any((not protokoll or p == protokoll) and (ports is None or port in ports) for p, port in _offene_dienste())
+
+
+@_einmal_je_prueflauf
+def _nat_auf_loopback() -> bool:
+    """Eine Weiterleitung auf 127.0.0.1 macht aus "nur lokal" einen Weg von aussen. Lesefehler: lieber ja."""
+    try:
+        return any(ziel in core.router(f"{pfad} print terse")
+                   for pfad, ziel in (("/ip firewall nat", "to-addresses=127."), ("/ipv6 firewall nat", "to-address=::1")))
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return True
+
+
+def _freigabe_nur_von_innen(row: dict, filter_path: str) -> bool:
+    """Gilt die Freigabe nur fuer Interfaces, die nicht ins Internet fuehren?"""
+    uplinks = _uplinks(filter_path, True)
+    if not uplinks:
+        return False
+    return _regel_trifft(row, uplinks) == set()
+
+
+def _freigabe_harmlos(row: dict, filter_path: str) -> bool:
+    """Oeffnet diese Freigabe nur etwas, das die Verwaltung des Routers nicht erreicht?
+
+    Alle Bedingungen einer Regel muessen zutreffen. Eine einzige passende Bedingung reicht also als
+    Beleg, weitere engen die Regel nur weiter ein. Negierte Werte wie "protocol=!icmp" treffen nie zu.
+    """
+    protokoll = row.get("protocol", "")
+    if protokoll in _PROTOKOLLE_OHNE_DIENST:
+        return True
+    if row.get("dst-address") in _ZIEL_LOOPBACK and not _nat_auf_loopback():
+        return True
+    if row.get("ipsec-policy") == "in,ipsec":
+        return True
+    if protokoll in ("tcp", "udp") and row.get("dst-port"):
+        ports = _port_menge(row["dst-port"])
+        verwaltung = _verwaltungsports() if ports else None
+        if ports and verwaltung is not None and not ports & verwaltung:
+            return True
+    return _freigabe_nur_von_innen(row, filter_path)
+
+
+def _regel_kurz(row: dict) -> str:
+    felder = " ".join(f"{k}={v}" for k, v in row.items() if k not in _REGEL_METADATEN and k != FLAG_I)
+    text = f'{row.get("action", "accept")} {felder}'.strip()
+    return text if len(text) <= 100 else text[:99] + "…"
+
+
+def _hinweis_freigabe(row: dict) -> str:
+    if row.get("action") != "accept":
+        return (f"Die Regel „{_regel_kurz(row)}“ leitet Pakete aus dieser Kette heraus, den weiteren Weg wertet das "
+                "Cockpit nicht aus. Prüfe, ob dort Zugriff aus dem Internet erlaubt wird.")
+    return (f"Die Regel „{_regel_kurz(row)}“ erlaubt Zugriff unter einer Bedingung, die das Cockpit nicht bewerten kann. "
+            "Prüfe, ob sie nur für Geräte gilt, denen du vertraust.")
+
+
+_HINWEIS_TRACKING = ("Die Verbindungsverfolgung ist abgeschaltet oder eine Notrack-Regel ist aktiv. Regeln mit "
+                     "connection-state belegen dann nichts.")
+
+
+def _hinweis_sperre(row: dict, filter_path: str, gedeckt: set[str]) -> str:
+    kurz = _regel_kurz(row)
+    if row.get(FLAG_I):
+        return (f"Die Regel „{kurz}“ wirkt gerade nicht, RouterOS meldet sie als ungültig. Den Grund zeigt ihr Kommentar "
+                "in WinBox. Prüfe, ob der Router auch ohne sie geschützt ist.")
+    if row.get("connection-state"):
+        return _HINWEIS_TRACKING
+    uplinks = _uplinks(filter_path)
+    if uplinks:
+        return (f"Das Cockpit kann nicht belegen, dass die Regel „{kurz}“ alle deine Internetanschlüsse trifft. "
+                f"Nicht belegt: {', '.join(sorted(uplinks - gedeckt))}. Prüfe, ob das wirklich Wege ins Internet sind.")
+    name = row.get("in-interface", "")
+    if uplinks == set() and name and _NAME_SICHER.fullmatch(name) and not row.get("in-interface-list"):
+        return (f"Die Regel „{kurz}“ schützt den Router nur, wenn sie deinen Internetanschluss trifft. Das Cockpit findet "
+                f"weder eine Liste WAN noch eine Standardroute. Hat das Gerät keinen Internetanschluss, ist nichts zu tun. "
+                f"Ist {name} dein Internetanschluss, klärt das dieser Befehl: "
+                ':if ([:len [/interface list find name=WAN]]=0) do={/interface list add name=WAN}; '
+                f'/interface list member add list=WAN interface="{name}" Regeln, die die Liste WAN nutzen, gelten danach auch für diesen Anschluss.')
+    return (f"Die Regel „{kurz}“ schützt den Router nur, wenn sie deinen Internetanschluss trifft. Das Cockpit kann ihn "
+            "nicht sicher bestimmen, etwa wegen einer fehlenden Liste WAN oder weil er in einer Bridge oder VRF liegt. "
+            "Hat das Gerät keinen Internetanschluss, ist nichts zu tun.")
+
+
+_HINWEIS_FREITEXT = ("Eine Regel enthält freien Text, etwa im Kommentar oder in content=, den das Cockpit nicht sicher von "
+                     "Regelfeldern trennen kann. Prüfe diese Regel von Hand. Ohne Text wie \"feld=wert\" im Kommentar lässt sie sich lesen.")
+# Nur am Kettenende ohne Sperre: Ein Access Point hinter einem Router hat oft gar keine Firewall.
+_HINWEIS_OHNE_SPERRE = "ohne_sperre"
+_TEXT_OHNE_SPERRE = "Keine aktive, generell wirkende Drop/Reject-Regel in der Input-Kette gefunden."
+
+
+def _keine_sperre_dahinter(rows: list[dict], filter_path: str) -> bool:
+    """Am Kettenende ist alles offen. Kommt hinter einer Freigabe nichts, was sperren kann, ist die Kette belegbar offen."""
+    return all(not row.get(REGEL_UNKLAR) and row.get("action") not in ("jump", "return")
+               and _blocks_unauthorized_input(row, filter_path) is False for row in rows)
+
+
+def _ipv6_ohne_internet() -> bool:
+    """Weder globale IPv6-Adresse noch Standardroute: Aus dem Internet fuehrt dann kein Weg zum Router."""
+    if _standard_ausgaenge("/ipv6 firewall filter") != set():
+        return False
+    try:
+        rows = parse_terse(core.router("/ipv6 address print terse"))
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return False
+    try:
+        return not any(ipaddress.ip_address(row.get("address", "").split("/")[0]).is_global for row in rows)
+    except ValueError:
+        return False
+
+
+def _plain_warnung(rot: list[tuple[str, str | None]]) -> str:
+    """Der konkrete Grund geht vor. Der Rat passt nur, wo wirklich keine Sperre steht, und nur zu dieser Adressfamilie."""
+    for familie, grund in rot:
+        if grund != _HINWEIS_OHNE_SPERRE:
+            return f"{familie}: {grund}"
+    familien = {familie for familie, _ in rot}
+    teile = ["Der Router hat keine wirksame Sperre gegen unbekannte Zugriffsversuche von außen.",
+             "Prüfe zuerst, dass dein Verwaltungszugang in der Liste LAN steht und dein Internetanschluss nicht."]
+    if "IPv4" in familien:
+        # Ohne die erste Regel verwirft die Sperre auch die Antworten auf eigene Anfragen des Routers, etwa DNS.
+        teile.append("Lege dann im Safe Mode am Ende der Input-Kette diese Regeln an: /ip firewall filter add chain=input action=accept "
+                     "connection-state=established,related,untracked und danach /ip firewall filter add chain=input action=drop in-interface-list=!LAN")
+    if "IPv6" in familien:
+        # Eine IPv6-Sperre ohne ICMPv6 und DHCPv6 legt den Anschluss lahm.
+        teile.append("Für IPv6 nimm die Regeln aus der Standardkonfiguration von RouterOS als Vorlage, sie lassen ICMPv6 und DHCPv6 durch.")
+    teile.append("Läuft dieses Gerät nur als Access Point oder Switch hinter einem Router, ist das normal, dann muss der Router davor schützen.")
+    return " ".join(teile)
+
+
+@_als_prueflauf
 def _input_firewall_check(filter_path: str = "/ip firewall filter") -> tuple[bool | None, str]:
+    return _input_firewall_befund(filter_path)[:2]
+
+
+def _input_firewall_befund(filter_path: str = "/ip firewall filter") -> tuple[bool | None, str, str | None]:
     """Prueft, ob die Input-Kette (chain=input) generell unautorisierten Zugriff sperrt.
 
     Extrahiert aus _security_check_input_firewall() (Audit "IPv6 Router-Selbstschutz",
@@ -1301,44 +1664,68 @@ def _input_firewall_check(filter_path: str = "/ip firewall filter") -> tuple[boo
     von "/ipv6 firewall filter" live gegen den Test-hAP (10.09.2026) identisch zu IPv4
     bestaetigt, siehe auch core._guest_isolation()'s filter_path-Parameter vom selben Tag.
 
-    True: aktive Sperrregel gefunden (good). False: nachweislich offen -- entweder eine
-    allgemeine Freigabe vor jeder Sperre, oder das Kettenende ohne jede aktive Sperrregel
-    (beides warn). None: vorgelagerte Freigaben/Sprungketten mit ungeklaerter Reichweite,
-    eine Sperre, deren Wirkung aufs Internet offen bleibt, oder die Kette selbst nicht
-    lesbar (unknown).
+    True: Die Sperren decken alle Wege ins Internet (good). False: nachweislich offen -- eine
+    allgemeine Freigabe vor jeder Sperre, eine Freigabe auf einen Verwaltungsdienst aus dem Internet
+    oder das Kettenende ohne jede wirkende Sperre (warn). None: Freigaben oder Spruenge mit
+    ungeklaerter Reichweite, eine Sperre, deren Wirkung aufs Internet offen bleibt, oder die Kette
+    selbst nicht lesbar (unknown).
+
+    Der dritte Wert nennt, wo vorhanden, die konkrete Ursache fuer die Alltagssprache.
     """
     try:
         rows = parse_regeln(core.router(f'{filter_path} print terse where chain=input'))
-    except (RouterCommandFailed, RouterUnreachable):
-        return None, "Firewall-Regeln konnten nicht gelesen werden."
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
+        return None, "Firewall-Regeln konnten nicht gelesen werden.", None
     # Eine vorherige allgemeine Freigabe beendet die Verarbeitung, bevor eine
     # spätere Sperre greifen kann. Eine solche Kette darf nie als geschützt gelten.
-    metadata = {"chain", "action", "comment", "disabled", "running", "log", "log-prefix", ".id", "bytes", "packets"}
-    sperre_offen = False
-    for row in rows:
+    sperre_offen = None
+    gedeckt: set[str] = set()
+    for nummer, row in enumerate(rows):
         if row.get(REGEL_UNKLAR):
-            return None, "Eine Regel lässt sich nicht sicher lesen, weil sie freien Text enthält, der wie Regelfelder aussehen kann."
+            return None, "Eine Regel lässt sich nicht sicher lesen, weil sie freien Text enthält, der wie Regelfelder aussehen kann.", _HINWEIS_FREITEXT
         if row.get("disabled"):
             continue
-        if row.get("action") == "accept" and not any(
-            value for key, value in row.items() if key not in metadata
+        aktion = row.get("action")
+        if aktion == "accept" and not any(
+            value for key, value in row.items() if key not in _REGEL_METADATEN
         ):
-            return False, "Eine allgemeine Freigabe steht vor einer wirksamen Zugriffssperre."
-        if row.get("action") in ("accept", "jump", "return"):
+            return False, "Eine allgemeine Freigabe steht vor einer wirksamen Zugriffssperre.", (
+                "Eine Freigabe ohne jede Bedingung steht vor der Sperre, der Router ist damit offen. Entferne sie oder schränke sie ein.")
+        if aktion in ("accept", "jump", "return"):
+            offen = "Vorgelagerte Freigaben oder Sprungketten benötigen eine vollständige Firewall-Prüfung."
             states = set(row.get("connection-state", "").split(","))
-            if states and states <= {"established", "related", "untracked", "invalid"} and not core._zustand_unzuverlaessig(filter_path):
+            if states and states <= {"established", "related", "untracked", "invalid"}:
+                if core._zustand_unzuverlaessig(filter_path):
+                    return None, offen, _HINWEIS_TRACKING
                 continue
-            return None, "Vorgelagerte Freigaben oder Sprungketten benötigen eine vollständige Firewall-Prüfung."
-        sperrt = _blocks_unauthorized_input(row)
+            if aktion == "accept" and not row.get(FLAG_I):
+                if _freigabe_harmlos(row, filter_path):
+                    continue
+                if _freigabe_oeffnet_verwaltung(row, filter_path, gedeckt):
+                    return (False, "Eine Freigabe öffnet einen Verwaltungsdienst des Routers zum Internet.",
+                            f"Die Regel „{_regel_kurz(row)}“ öffnet die Verwaltung des Routers zum Internet. "
+                            "Entferne sie oder beschränke sie auf bekannte Adressen.")
+                if sperre_offen is None and _keine_sperre_dahinter(rows[nummer + 1:], filter_path):
+                    return False, _TEXT_OHNE_SPERRE, _HINWEIS_OHNE_SPERRE
+            return None, offen, _hinweis_freigabe(row)
+        sperrt = _blocks_unauthorized_input(row, filter_path)
         if sperrt:
-            return True, "Eine aktive Sperrregel für unbekannten Zugriff ist vorhanden."
+            return True, "Eine aktive Sperrregel für unbekannten Zugriff ist vorhanden.", None
         if sperrt is None:
-            sperre_offen = True
+            sperre_offen = sperre_offen or row
+            # Mehrere Sperren decken zusammen alle Wege. Zustandsregeln treffen nicht jedes Paket, ungueltige gar keines.
+            uplinks = _uplinks(filter_path)
+            getroffen = _regel_trifft(row, uplinks) if uplinks and not row.get("connection-state") and not row.get(FLAG_I) else None
+            if getroffen:
+                gedeckt |= getroffen
+                if uplinks <= gedeckt:
+                    return True, "Eine aktive Sperrregel für unbekannten Zugriff ist vorhanden.", None
     if sperre_offen:
-        return None, "Eine Sperrregel ist vorhanden, ob sie den Zugriff aus dem Internet trifft, lässt sich nicht belegen."
-    return False, "Keine aktive, generell wirkende Drop/Reject-Regel in der Input-Kette gefunden."
+        return None, "Eine Sperrregel ist vorhanden, ob sie den Zugriff aus dem Internet trifft, lässt sich nicht belegen.", _hinweis_sperre(sperre_offen, filter_path, gedeckt)
+    return False, _TEXT_OHNE_SPERRE, _HINWEIS_OHNE_SPERRE
 
 
+@_als_prueflauf
 def _security_check_input_firewall() -> dict:
     """Audit "IPv6 Router-Selbstschutz", 10.09.2026: Router-eigener Zugriffsschutz wurde bisher
     nur ueber IPv4 (chain=input) geprueft. Analog zur Gastnetz-Isolation vom selben Tag wird jetzt
@@ -1346,13 +1733,19 @@ def _security_check_input_firewall() -> dict:
     (core._ipv6_relevant(), RouterOS-Default: aktiv). Gesamtstatus ist das jeweils schlechtere
     Ergebnis aus IPv4/IPv6 (warn > unknown > good) -- eine saubere IPv4-Sperre allein reicht nicht,
     wenn der Router zusaetzlich ueber eine globale IPv6-Adresse erreichbar ist."""
-    result_v4, detail_v4 = _input_firewall_check()
-    status = _isolation_status_label(result_v4)
+    ergebnis_v4, detail_v4, hinweis = _input_firewall_befund()
+    status = _isolation_status_label(ergebnis_v4)
     detail_parts = [f"IPv4: {detail_v4}"]
+    # Was der Nutzer als Erstes lesen soll: je Adressfamilie der konkrete Grund.
+    rot, offen = [], []
+    if ergebnis_v4 is False:
+        rot.append(("IPv4", hinweis))
+    elif ergebnis_v4 is None and hinweis:
+        offen.append(f"Noch offen bei IPv4: {hinweis}")
 
     try:
         ipv6_on = core._ipv6_relevant()
-    except (RouterCommandFailed, RouterUnreachable):
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
         ipv6_on = None
     if ipv6_on is None:
         # Weder "sicher aktiv" noch "sicher aus" -- ein "good" allein auf Basis von IPv4
@@ -1360,23 +1753,27 @@ def _security_check_input_firewall() -> dict:
         status = max(status, "unknown", key=_ISOLATION_SEVERITY.get)
         detail_parts.append("IPv6-Status konnte nicht ermittelt werden.")
     elif ipv6_on:
-        result_v6, detail_v6 = _input_firewall_check(filter_path="/ipv6 firewall filter")
-        status_v6 = _isolation_status_label(result_v6)
-        detail_parts.append(f"IPv6: {detail_v6}")
-        status = max(status, status_v6, key=_ISOLATION_SEVERITY.get)
+        ergebnis_v6, detail_v6, hinweis = _input_firewall_befund(filter_path="/ipv6 firewall filter")
+        if ergebnis_v6 is False and hinweis == _HINWEIS_OHNE_SPERRE and _ipv6_ohne_internet():
+            # Der Stack laeuft ab Werk, ohne dass der Router per IPv6 aus dem Internet erreichbar waere.
+            detail_parts.append("IPv6: Ohne globale Adresse und Standardroute führt kein Weg aus dem Internet zum Router.")
+        else:
+            detail_parts.append(f"IPv6: {detail_v6}")
+            status = max(status, _isolation_status_label(ergebnis_v6), key=_ISOLATION_SEVERITY.get)
+            if ergebnis_v6 is False:
+                rot.append(("IPv6", hinweis))
+            elif ergebnis_v6 is None and hinweis:
+                offen.append(f"Noch offen bei IPv6: {hinweis}")
     # sonst (ipv6_on is False): Stack deaktiviert oder Paket fehlt -- keine IPv6-Angriffsflaeche.
 
-    plain = {
-        "good": "Der Router blockt unbekannte Zugriffsversuche von außen - kein "
-                "Handlungsbedarf.",
-        "warn": "Der Router hat aktuell keine wirksame Sperre gegen unbekannte "
-                "Zugriffsversuche von außen. Lege in der Firewall eine Regel an, die neue "
-                "Verbindungen in der Input-Kette blockt, sofern sie nicht ausdrücklich "
-                "erlaubt sein sollen.",
-        "unknown": "Ob der Router gegen unbekannte Zugriffsversuche von außen geschützt ist, "
-                   "konnte nicht abschließend geklärt werden. Das ist keine Bestätigung, dass "
-                   "er sicher ist - bitte die Firewall-Regeln manuell prüfen.",
-    }[status]
+    if status == "good":
+        plain = "Der Router blockt unbekannte Zugriffsversuche von außen - kein Handlungsbedarf."
+    elif status == "unknown":
+        plain = offen[0] if offen else ("Noch offen: Ob der Router gegen unbekannte Zugriffsversuche von außen geschützt ist, "
+                                        "ließ sich nicht klären. Den Grund nennen die technischen Details.")
+        plain += " Das heißt nicht, dass etwas falsch ist, aber auch nicht, dass alles sicher ist."
+    else:
+        plain = _plain_warnung(rot)
     return {"id": "input_firewall", "label": "Zugriffsschutz auf den Router", "status": status,
             "detail": " ".join(detail_parts), "plain": plain}
 
@@ -1496,9 +1893,9 @@ def _security_check_guest_isolation() -> dict:
             "warn": "Geräte im Gastnetz können aktuell ins Hausnetz gelangen. Lege eine "
                     "Firewall-Regel an, die Verkehr vom Gastnetz-Interface ins Hausnetz blockt "
                     "(Forward-Kette, Aktion 'drop').",
-            "unknown": "Es konnte nicht eindeutig geklärt werden, ob das Gastnetz vom Hausnetz "
-                       "getrennt ist. Das ist keine Bestätigung der Sicherheit - bitte die "
-                       "Firewall-Regeln manuell prüfen.",
+            "unknown": "Noch offen: Das Cockpit konnte nicht belegen, dass das Gastnetz vom Hausnetz "
+                       "getrennt ist. Den Grund nennen die technischen Details. Das heißt nicht, dass "
+                       "etwas falsch ist, aber auch nicht, dass alles sicher ist.",
         }[status]
     return {"id": "guest_isolation", "label": "Gastnetz-Isolation", "status": status,
             "detail": " ".join(detail_parts), "plain": plain}
@@ -1797,14 +2194,19 @@ def device_reservation(mac: str):
     if ip_owner and ip_owner[0].get("mac-address", "").lower() != safe_mac:
         return jsonify({"error": "ip_in_use", "message": "IP bereits vergeben"}), 409
 
-    lease = parse_terse(core.router(f'/ip dhcp-server lease print terse where mac-address="{safe_mac}"'))
+    # Am CHR gemessen (2026-11-06): RouterOS 7.24.5 findet einen Lease nur mit grossgeschriebener MAC, 7.25.1 mit beiden.
+    router_mac = safe_mac.upper()
+    lease = parse_terse(core.router(f'/ip dhcp-server lease print terse where mac-address="{router_mac}"'))
     if not lease:
         return jsonify({
             "error": "device_not_found",
             "message": "Kein bekannter DHCP-Lease für diese MAC -- Gerät muss vorher online gewesen sein",
         }), 404
-    server = core._routeros_value(lease[0].get("server", ""), "server")
+    # Beide Werte stehen im naechsten Befehl. Der Hostname eines Geraets kann Felder der Zeile vortaeuschen.
+    server = core._gelesener_name(lease[0].get("server", ""))
     old_address = lease[0].get("address", "")
+    if old_address:
+        core._gelesener_name(old_address)
 
     comment = f"cockpit-webui:{webui_scheme}:{webui_port}" if has_webui else ""
 
@@ -1816,11 +2218,11 @@ def device_reservation(mac: str):
     # nicht per mac-address allein -- sonst wuerde nach erfolgreichem Anlegen auch der gerade
     # neu erstellte Eintrag mitgeloescht, weil beide dieselbe MAC tragen.
     core.router(
-        f'/ip dhcp-server lease add mac-address={safe_mac} address={ip} server={server} '
+        f'/ip dhcp-server lease add mac-address={router_mac} address={ip} server="{server}" '
         f'comment="{comment}"'
     )
     if old_address and old_address != ip:
-        core.router(f'/ip dhcp-server lease remove [find mac-address="{safe_mac}" and address="{old_address}"]')
+        core.router(f'/ip dhcp-server lease remove [find mac-address="{router_mac}" and address="{old_address}"]')
     return jsonify({"ok": True})
 
 
@@ -1964,10 +2366,14 @@ def dhcp_ranges_list():
         name = srv.get("name", "")
         if not name.startswith("cockpit-dhcp-"):
             continue
-        range_id = name[len("cockpit-dhcp-"):]
-        interface = srv.get("interface")
+        try:
+            range_id = core._gelesener_name(name[len("cockpit-dhcp-"):])
+            interface = core._gelesener_name(srv.get("interface"))
+            pool = core._gelesener_name(srv.get("address-pool"))
+        except RouterCommandFailed:
+            continue
         pool_rows = parse_terse(
-            core.router(f'/ip pool print terse where name="{srv.get("address-pool")}"')
+            core.router(f'/ip pool print terse where name="{pool}"')
         )
         range_start, range_end = None, None
         if pool_rows:
@@ -2129,6 +2535,9 @@ def dhcp_ranges_delete(range_id: str):
     if not servers:
         return jsonify({"error": "not_found", "message": "DHCP-Bereich unbekannt"}), 404
     pool_name = servers[0].get("address-pool")
+    # Vor dem ersten Loeschen pruefen, damit nichts halb entfernt zurueckbleibt.
+    if pool_name:
+        core._gelesener_name(pool_name)
 
     # Netzwerk-Eintrag hat keinen eigenen Namen -- dessen Kommentar bleibt aber unveraendert
     # von RouterOS (kein Interface-Status-Praefix dort), Substring-Suche reicht hier sicher.

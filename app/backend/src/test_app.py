@@ -91,10 +91,10 @@ FAKE_OUTPUT = {
         '0  chain=dstnat protocol=tcp dst-port=8080 comment="cockpit-pf:pf-aaaa1111:Kamera Einfahrt"\n'
     ),
     '/ip dhcp-server lease print terse where address="192.168.178.70"': "",
-    '/ip dhcp-server lease print terse where mac-address="24:0a:c4:11:22:33"': (
+    '/ip dhcp-server lease print terse where mac-address="24:0A:C4:11:22:33"': (
         '0  address=192.168.178.65 mac-address=24:0A:C4:11:22:33 server=dhcp1\n'
     ),
-    '/ip dhcp-server lease print terse where mac-address="aa:bb:cc:11:22:33"': "",
+    '/ip dhcp-server lease print terse where mac-address="AA:BB:CC:11:22:33"': "",
     "/ip address print terse": (
         ' 0  address="192.168.88.1/24" interface="ether1"\n'
         ' 1  address="192.168.20.1/24" interface="vlan20-buero"\n'
@@ -1658,6 +1658,59 @@ class ApiTest(unittest.TestCase):
         by_id = {c["id"]: c for c in resp.get_json()["checks"]}
         self.assertEqual(by_id["default_user"]["status"], "unknown")
         self.assertNotIn("ist sicher", by_id["default_user"]["plain"].lower())
+
+    def test_dhcp_bereich_loeschen_prueft_den_pool_vor_dem_ersten_loeschen(self):
+        session_id = "dhcp-loeschen-session"
+        core_module.SESSIONS[session_id] = {"host": "dhcp-loeschen-host", "user": "admin", "password": "x", "ssh_port": 22}
+        befehle = []
+
+        def router(command):
+            befehle.append(command)
+            if command.startswith("/ip dhcp-server print terse"):
+                return '0 name=cockpit-dhcp-dhcp-abcdef12 address-pool=x"; /system reboot; :put "y\n'
+            return ""
+
+        with patch("core.router", side_effect=router):
+            resp = self.client.delete("/api/v1/network/dhcp-ranges/dhcp-abcdef12", headers={"X-Cockpit-Session": session_id})
+        self.assertEqual(resp.status_code, 502)
+        self.assertEqual(resp.get_json()["error"], "unsafe_router_value")
+        self.assertFalse([b for b in befehle if "remove" in b], befehle)
+
+    def test_reservierung_mit_vorgetaeuschten_feldern_sendet_nichts(self):
+        session_id = "lease-boese-session"
+        core_module.SESSIONS[session_id] = {"host": "lease-boese-host", "user": "admin", "password": "x", "ssh_port": 22}
+        for lease in ('0 D address=192.168.88.50 mac-address=AA:BB:CC:DD:EE:01 server=[/system/reboot] host-name=a\n',
+                      '0 D address=192.168.88.50 mac-address=AA:BB:CC:DD:EE:01 host-name=a server=x"; /system reboot; :put "y\n',
+                      '0 D mac-address=AA:BB:CC:DD:EE:01 server=d host-name=evil address=1.1.1.1"; /system reboot; :put "y\n'):
+            befehle = []
+
+            def router(command, zeile=lease):
+                befehle.append(command)
+                return zeile if command.startswith("/ip dhcp-server lease print terse where mac-address") else ""
+
+            with self.subTest(lease=lease), patch("core.router", side_effect=router):
+                self.client.put("/api/v1/devices/AA:BB:CC:DD:EE:01/reservation", json={"ip": "192.168.88.60"}, headers={"X-Cockpit-Session": session_id})
+                # Mit Anfuehrungszeichen bleibt "[...]" reiner Text, ein falscher Servername scheitert am Router.
+                self.assertFalse([b for b in befehle if "server=[" in b or "; /system" in b], befehle)
+
+    def test_dhcp_namen_vom_router_landen_in_keinem_befehl(self):
+        session_id = "dhcp-boese-session"
+        core_module.SESSIONS[session_id] = {"host": "dhcp-boese-host", "user": "admin", "password": "x", "ssh_port": 22}
+        boese = 'x"; /system reboot; :put "y'
+        befehle = []
+
+        def router(command):
+            befehle.append(command)
+            if command.startswith("/ip dhcp-server print terse"):
+                return (f"0 name=cockpit-dhcp-a interface=bridge address-pool={boese}\n"
+                        f"1 name=cockpit-dhcp-b interface={boese} address-pool=p\n"
+                        f"2 name=cockpit-dhcp-{boese} interface=bridge address-pool=p\n")
+            return ""
+
+        with patch("core.router", side_effect=router):
+            resp = self.client.get("/api/v1/network/dhcp-ranges", headers={"X-Cockpit-Session": session_id})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse([b for b in befehle if "reboot" in b], befehle)
 
     def test_security_check_input_firewall_drop_invalid_only_is_not_good(self):
         # Audit Runde 5, Befund 1: die RouterOS-Standardregel "drop invalid" (nur

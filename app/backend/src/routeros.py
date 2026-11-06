@@ -536,6 +536,48 @@ def parse_terse(output: str) -> list[dict]:
     return rows
 
 
+class RouterWertUnsicher(RouterCommandFailed):
+    """Ein Wert vom Router haette den Befehl veraendert. Der Befehl wurde nicht gesendet."""
+
+
+# Nur Lesen: ein Pfad ohne schreibendes Wort, dann find, print oder get. "[/system reboot]" passt nicht.
+_BEFEHL_ERLAUBTE_KLAMMER = re.compile(
+    r"\[\s*(find\b|:serialize\b|:len\b|/(?:(?!\b(?:add|set|unset|remove|move|run|reset|reboot|shutdown|enable|disable|export|import|edit|comment|send|upload)\b)[\w/ -])*\b(find|print|get)\b)")
+
+
+def befehl_unsicher(befehl: str) -> str | None:
+    """Warum dieser Befehl nicht gesendet werden darf. None: Er ist in Ordnung.
+
+    Letzte Schutzschicht gegen eingeschleuste Befehle. Am CHR gemessen (2026-11-06): RouterOS nimmt Namen mit " und ;
+    an, und ein so eingebetteter Befehl laeuft wirklich. Geprueft wird die Struktur, also was ausserhalb der
+    Anfuehrungszeichen steht. Das Cockpit sendet immer genau eine Anweisung.
+    """
+    if any(zeichen in befehl for zeichen in "\r\n"):
+        return "Zeilenumbruch"
+    in_text = False
+    i = 0
+    while i < len(befehl):
+        zeichen = befehl[i]
+        if in_text:
+            if zeichen == "\\":
+                i += 2
+                continue
+            if zeichen == "$" and befehl[i + 1:i + 2] in ("[", "("):
+                return "Befehl im Text"
+            if zeichen == '"':
+                in_text = False
+        elif zeichen == '"':
+            in_text = True
+        elif zeichen == ";":
+            return "zweite Anweisung"
+        elif zeichen == "[" and not _BEFEHL_ERLAUBTE_KLAMMER.match(befehl, i):
+            return "unbekannter Befehl in Klammern"
+        elif zeichen == "$" and befehl[i + 1:i + 2] in ("[", "("):
+            return "Befehl als Wert"
+        i += 1
+    return "offenes Anfuehrungszeichen" if in_text else None
+
+
 # Eine Regelzeile, deren echte Felder sich nicht sicher von freiem Text trennen lassen.
 REGEL_UNKLAR = "regel-unklar"
 # Eine Regel mit Flag I, von der offen ist, ob sie wirkt. Kein bekanntes Feld, also auch kein Beleg.

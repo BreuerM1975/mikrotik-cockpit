@@ -904,10 +904,13 @@ window.COCKPIT_DICT_EN = {
   "Keine Cockpit-Portfreigaben vorhanden.": "No Cockpit port forwards.",
   "Die Trennung vom privaten Netzwerk ist nicht nachgewiesen. Ein aktiviertes Gastnetz allein schützt deine Geräte nicht. Vor der Nutzung die Netztrennung prüfen lassen.":
     "Separation from your private network is not proven. An enabled guest network alone does not protect your devices. Have the separation checked before relying on it.",
-  "Ob der Router gegen unbekannte Zugriffsversuche von außen geschützt ist, konnte nicht abschließend geklärt werden. Das ist keine Bestätigung, dass er sicher ist - bitte die Firewall-Regeln manuell prüfen.":
-    "Whether the router is protected against unknown access attempts from outside could not be established conclusively. This is not a confirmation that it is safe — please check the firewall rules by hand.",
-  "Es konnte nicht eindeutig geklärt werden, ob das Gastnetz vom Hausnetz getrennt ist. Das ist keine Bestätigung der Sicherheit - bitte die Firewall-Regeln manuell prüfen.":
-    "It could not be established clearly whether the guest network is separated from the home network. This is not a confirmation of safety — please check the firewall rules by hand.",
+  "Noch offen: Ob der Router gegen unbekannte Zugriffsversuche von außen geschützt ist, ließ sich nicht klären. Den Grund nennen die technischen Details. Das heißt nicht, dass etwas falsch ist, aber auch nicht, dass alles sicher ist.":
+    "Still open: Whether the router is protected against unknown access attempts from outside could not be settled. The technical details give the reason. That does not mean something is wrong, and it does not mean everything is safe.",
+  "Noch offen: Das Cockpit konnte nicht belegen, dass das Gastnetz vom Hausnetz getrennt ist. Den Grund nennen die technischen Details. Das heißt nicht, dass etwas falsch ist, aber auch nicht, dass alles sicher ist.":
+    "Still open: Cockpit could not show that the guest network is separated from the home network. The technical details give the reason. That does not mean something is wrong, and it does not mean everything is safe.",
+  "Noch offen": "Still open",
+  "Offene Fragen im Sicherheits-Check": "Open questions in the security check",
+  "Das Cockpit hat den Befehl nicht gesendet, weil ein Name auf dem Router unsichere Zeichen enthält.": "Cockpit did not send the command because a name on the router contains unsafe characters.",
   "IPv4: Vorgelagerte Freigaben oder Sprungketten benötigen eine vollständige Firewall-Prüfung. IPv6: Vorgelagerte Freigaben oder Sprungketten benötigen eine vollständige Firewall-Prüfung.":
     "IPv4: earlier accept rules or jump chains require a full firewall review. IPv6: earlier accept rules or jump chains require a full firewall review.",
   "IPv4: keine eindeutige Regel gefunden. IPv6: aktiv, aber keine eindeutige Regel gefunden.":

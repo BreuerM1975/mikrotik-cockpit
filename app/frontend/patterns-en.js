@@ -6,7 +6,31 @@
 const USER_VERBS_EN = { deaktivieren: "disable", "löschen": "delete", herabstufen: "downgrade" };
 const USER_VERBS_EN_PAST = { deaktivieren: "disabled", "löschen": "deleted", herabstufen: "downgraded" };
 
+const OFFEN_SCHLUSS_DE = "Das heißt nicht, dass etwas falsch ist, aber auch nicht, dass alles sicher ist\\.";
+const OFFEN_SCHLUSS_EN = "That does not mean something is wrong, and it does not mean everything is safe.";
+const offenMuster = (satz) => new RegExp(`^Noch offen bei (IPv4|IPv6): ${satz} ${OFFEN_SCHLUSS_DE}$`);
+
 window.COCKPIT_PATTERNS_EN = [
+  [/^(IPv4|IPv6): Die Regel „(.+)“ öffnet die Verwaltung des Routers zum Internet\. Entferne sie oder beschränke sie auf bekannte Adressen\.$/,
+    "$1: The rule “$2” opens the router's management to the internet. Remove it or limit it to known addresses."],
+  [offenMuster("Die Regel „(.+)“ erlaubt Zugriff unter einer Bedingung, die das Cockpit nicht bewerten kann\\. Prüfe, ob sie nur für Geräte gilt, denen du vertraust\\."),
+    `Still open for $1: The rule “$2” allows access under a condition Cockpit cannot judge. Check that it only applies to devices you trust. ${OFFEN_SCHLUSS_EN}`],
+  [offenMuster("Die Regel „(.+)“ leitet Pakete aus dieser Kette heraus, den weiteren Weg wertet das Cockpit nicht aus\\. Prüfe, ob dort Zugriff aus dem Internet erlaubt wird\\."),
+    `Still open for $1: The rule “$2” sends packets out of this chain, and Cockpit does not evaluate where they go next. Check whether access from the internet is allowed there. ${OFFEN_SCHLUSS_EN}`],
+  [offenMuster("Das Cockpit kann nicht belegen, dass die Regel „(.+)“ alle deine Internetanschlüsse trifft\\. Nicht belegt: (.+)\\. Prüfe, ob das wirklich Wege ins Internet sind\\."),
+    `Still open for $1: Cockpit cannot show that the rule “$2” covers all your internet connections. Not shown: $3. Check whether those really lead to the internet. ${OFFEN_SCHLUSS_EN}`],
+  [offenMuster("Die Regel „(.+)“ schützt den Router nur, wenn sie deinen Internetanschluss trifft\\. Das Cockpit findet weder eine Liste WAN noch eine Standardroute\\. Hat das Gerät keinen Internetanschluss, ist nichts zu tun\\. Ist (.+) dein Internetanschluss, klärt das dieser Befehl: (.+) Regeln, die die Liste WAN nutzen, gelten danach auch für diesen Anschluss\\."),
+    `Still open for $1: The rule “$2” only protects the router if it covers your internet connection. Cockpit finds neither a list WAN nor a default route. If the device has no internet connection, there is nothing to do. If $3 is your internet connection, this command settles it: $4 Rules that use the list WAN then apply to this connection too. ${OFFEN_SCHLUSS_EN}`],
+  [offenMuster("Die Regel „(.+)“ schützt den Router nur, wenn sie deinen Internetanschluss trifft\\. Das Cockpit kann ihn nicht sicher bestimmen, etwa wegen einer fehlenden Liste WAN oder weil er in einer Bridge oder VRF liegt\\. Hat das Gerät keinen Internetanschluss, ist nichts zu tun\\."),
+    `Still open for $1: The rule “$2” only protects the router if it covers your internet connection. Cockpit cannot determine that connection reliably, for example because a list WAN is missing or it sits in a bridge or VRF. If the device has no internet connection, there is nothing to do. ${OFFEN_SCHLUSS_EN}`],
+  [offenMuster("Die Verbindungsverfolgung ist abgeschaltet oder eine Notrack-Regel ist aktiv\\. Regeln mit connection-state belegen dann nichts\\."),
+    `Still open for $1: Connection tracking is off or a notrack rule is active, so rules with connection-state prove nothing. ${OFFEN_SCHLUSS_EN}`],
+  [offenMuster("Eine Regel enthält freien Text, etwa im Kommentar oder in content=, den das Cockpit nicht sicher von Regelfeldern trennen kann\\. Prüfe diese Regel von Hand\\. Ohne Text wie \"feld=wert\" im Kommentar lässt sie sich lesen\\."),
+    `Still open for $1: A rule contains free text, for example in its comment or in content=, that Cockpit cannot reliably separate from rule fields. Check this rule by hand. Without text like "field=value" in the comment it can be read. ${OFFEN_SCHLUSS_EN}`],
+  [offenMuster("Die Regel „(.+)“ wirkt gerade nicht, RouterOS meldet sie als ungültig\\. Den Grund zeigt ihr Kommentar in WinBox\\. Prüfe, ob der Router auch ohne sie geschützt ist\\."),
+    `Still open for $1: The rule “$2” has no effect right now, RouterOS reports it as invalid. Its comment in WinBox gives the reason. Check whether the router is protected without it. ${OFFEN_SCHLUSS_EN}`],
+  [/^(IPv4|IPv6): Eine Freigabe ohne jede Bedingung steht vor der Sperre, der Router ist damit offen\. Entferne sie oder schränke sie ein\.$/,
+    "$1: An accept rule without any condition comes before the block, so the router is open. Remove it or restrict it."],
   [/^Zuletzt geprüft: (.+)$/, "Last checked: $1"],
   [/^(\d+) von (\d+) Prüfungen bestanden$/, "$1 of $2 checks passed"],
   [/^Backend nicht erreichbar unter (.+)$/, "Backend unreachable at $1"],

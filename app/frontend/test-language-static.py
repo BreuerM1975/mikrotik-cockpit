@@ -111,8 +111,8 @@ def bausteine():
                 elif knoten.targets[0].id == "plain":
                     einzeln.update(_baustein_literale(knoten.value))
             # return False, "Ein Satz." -- der Aufrufer setzt ihn hinter "IPv4: " in detail_parts.
-            if isinstance(knoten, ast.Return) and isinstance(knoten.value, ast.Tuple) and len(knoten.value.elts) == 2:
-                ergebnis, satz = knoten.value.elts
+            if isinstance(knoten, ast.Return) and isinstance(knoten.value, ast.Tuple) and len(knoten.value.elts) in (2, 3):
+                ergebnis, satz = knoten.value.elts[:2]
                 if isinstance(ergebnis, ast.Constant) and (ergebnis.value is None or isinstance(ergebnis.value, bool)):
                     text = (_literal(satz) or "").strip()
                     if " " in text:
@@ -156,8 +156,86 @@ def covered(text, data):
     return False
 
 
+def saetze_zur_laufzeit():
+    """Saetze, die das Backend erst zur Laufzeit zusammensetzt: Die sieht der Syntaxbaum nicht."""
+    import os, tempfile
+    from unittest.mock import patch
+    ablage = tempfile.mkdtemp(prefix="cockpit-sprache-")
+    for name in ("BACKUP_DIR", "DEVICE_ROOMS_DIR", "SSH_CONTROL_DIR"):
+        os.environ.setdefault(f"COCKPIT_{name}", f"{ablage}/{name}")
+    os.environ.setdefault("COCKPIT_KNOWN_HOSTS_FILE", f"{ablage}/k/known_hosts")
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(BACKEND))
+    import app as _app  # noqa: F401  Loest die Reihenfolge der Importe wie im Betrieb auf.
+    import core, routes_basis
+    wan = '/interface list member print terse where list="WAN"'
+    faelle = (
+        ("0 chain=input action=accept src-address=10.0.0.1\n1 chain=input action=drop\n", {}),
+        ("0 chain=input action=jump jump-target=x\n1 chain=input action=drop\n", {}),
+        ("0 chain=input action=drop in-interface=ether1\n", {}),
+        ("0 chain=input action=drop in-interface=ether1\n", {wan: "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"}),
+        ("0 chain=input action=drop in-interface=ether1 in-interface-list=x\n", {}),
+        ("0 comment=a chain=b chain=input action=drop\n", {}),
+        ("", {}),
+        ("0 chain=input action=accept protocol=tcp dst-port=8291\n1 chain=input action=drop\n", {
+            wan: "0 list=WAN interface=ether1\n", "/ip service print terse": "0 name=winbox port=8291 proto=tcp available-from=\n"}),
+        ("0 chain=input action=accept\n1 chain=input action=drop\n", {}),
+        ("0 I comment=x not ready chain=input action=drop\n", {}),
+        ("0 chain=input action=accept connection-state=established\n1 chain=input action=drop\n", {
+            "/ip firewall connection tracking print": "  enabled: no\n"}),
+    )
+    saetze = []
+    for regeln, extra in faelle:
+        for familie in ("ip", "ipv6"):
+            antwort = {f"/{familie} firewall filter print terse where chain=input": regeln,
+                       "/ipv6 settings print": "  disable-ipv6: no\n", "/ipv6 address print terse": "0 G address=2a00:1450::1/64 interface=e\n", **extra}
+            andere = "/ipv6" if familie == "ip" else "/ip"
+            antwort[f"{andere} firewall filter print terse where chain=input"] = "0 chain=input action=drop\n"
+            with patch.object(core, "router", side_effect=lambda befehl: antwort.get(befehl, "")):
+                saetze.append(routes_basis._security_check_input_firewall()["plain"])
+    return sorted(set(saetze))
+
+
+def uebersetze(saetze):
+    """Nutzt die drei Stufen aus i18n.js in derselben Reihenfolge."""
+    script = f"""
+      global.window = {{}};
+      require({json.dumps(str(ROOT / 'dict-en.js'))});
+      require({json.dumps(str(ROOT / 'patterns-en.js'))});
+      require({json.dumps(str(ROOT / 'substitutions-en.js'))});
+      const stufen = (text) => {{
+        const hit = window.COCKPIT_DICT_EN[text];
+        if (hit !== undefined) return hit;
+        for (const [muster, ziel] of window.COCKPIT_PATTERNS_EN) {{
+          if (muster.test(text)) {{ muster.lastIndex = 0; return text.replace(muster, ziel); }}
+          muster.lastIndex = 0;
+        }}
+        let aus = text;
+        for (const [nadel, ziel] of window.COCKPIT_SUBSTITUTIONS_EN) aus = aus.split(nadel).join(ziel);
+        return aus;
+      }};
+      console.log(JSON.stringify({json.dumps(saetze)}.map(stufen)));
+    """
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+DEUTSCH = re.compile(r"[äöüßÄÖÜ]|\b(Noch|Regel|nicht|Router hat|Firewall-Regeln)\b")
+
+
 def main():
     data = load_language_files()
+    saetze = saetze_zur_laufzeit()
+    deutsch = [s for s, en in zip(saetze, uebersetze(saetze)) if DEUTSCH.search(en)]
+    if deutsch:
+        print(f"{len(deutsch)} Satz/Saetze aus der Laufzeit bleiben deutsch:\n")
+        for satz in deutsch:
+            print("  " + satz[:200])
+        return 1
+    if len(saetze) < 14:
+        print(f"Nur {len(saetze)} Saetze zur Laufzeit, das Muster der Pruefung passt nicht mehr.")
+        return 1
+    print(f"Saetze zur Laufzeit: {len(saetze)}, alle uebersetzt.")
     teile, einzeln = bausteine()
     gesamt = backend_texts()
     texts = gesamt | teile | einzeln

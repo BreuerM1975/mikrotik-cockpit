@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import core
+import routeros
 import routes_basis
 from routeros import RouterCommandFailed, RouterTimeout, parse_terse
 
@@ -401,7 +402,13 @@ class InputKommentarTests(unittest.TestCase):
         for zeile in ("0 I chain=input action=drop\n",
                       "0 I comment=in/out-interface matcher not possible chain=input action=drop in-interface=ether1\n"):
             with self.subTest(zeile=zeile):
-                self.assertIs(self._pruefe(zeile), False)
+                self.assertIsNone(self._pruefe(zeile))
+
+    def test_sperre_mit_flag_i_nennt_den_grund(self):
+        tabelle = {"/ip firewall filter print terse where chain=input": "0 I comment=pppoe-out1 not ready chain=input action=drop in-interface=pppoe-out1\n",
+                   self.WAN: "0 list=WAN interface=pppoe-out1\n", "/ipv6 settings print": "  disable-ipv6: yes\n"}
+        with patch.object(core, "router", side_effect=lambda c: tabelle.get(c, "")):
+            self.assertIn("wirkt gerade nicht", routes_basis._security_check_input_firewall()["plain"])
 
     def test_freigabe_mit_flag_i_bleibt_unklar(self):
         self.assertIsNone(self._pruefe("0 I chain=input action=accept\n1 chain=input action=drop\n"))
@@ -414,7 +421,7 @@ class InputKommentarTests(unittest.TestCase):
 
     def test_sperre_auf_einem_von_zwei_wan_ports_schuetzt_nicht(self):
         self.assertIs(self._pruefe("0 chain=input action=drop in-interface=ether1\n",
-                                   **{self.WAN: "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"}), False)
+                                   **{self.WAN: "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"}), None)
 
     def test_sperre_ausser_wan_port_schuetzt_nicht(self):
         self.assertIs(self._pruefe("0 chain=input action=drop in-interface=!ether1\n"), False)
@@ -425,10 +432,10 @@ class InputKommentarTests(unittest.TestCase):
     def test_sperre_ohne_wan_liste_bleibt_unklar(self):
         self.assertIsNone(self._pruefe("0 chain=input action=drop in-interface=ether1\n", **{self.WAN: ""}))
 
-    def test_standardlisten_schuetzen_ohne_weitere_abfrage(self):
+    def test_standardlisten_schuetzen_wenn_sie_den_anschluss_treffen(self):
         for regel in ("in-interface-list=!LAN", "in-interface-list=WAN"):
             with self.subTest(regel=regel):
-                self.assertIs(self._pruefe(f"0 chain=input action=drop {regel}\n", **{self.WAN: ""}), True)
+                self.assertIs(self._pruefe(f"0 chain=input action=drop {regel}\n"), True)
 
     def test_sperre_auf_lan_liste_schuetzt_nicht(self):
         self.assertIs(self._pruefe("0 chain=input action=drop in-interface-list=LAN\n",
@@ -441,7 +448,7 @@ class InputKommentarTests(unittest.TestCase):
     def test_eigene_liste_mit_einem_von_zwei_wan_ports_schuetzt_nicht(self):
         self.assertIs(self._pruefe("0 chain=input action=drop in-interface-list=aussen\n",
                                    **{self.WAN: "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n",
-                                      '/interface list member print terse where list="aussen"': "0 list=aussen interface=ether1\n"}), False)
+                                      '/interface list member print terse where list="aussen"': "0 list=aussen interface=ether1\n"}), None)
 
     def test_eigene_liste_ohne_wan_schuetzt_nicht(self):
         self.assertIs(self._pruefe("0 chain=input action=drop in-interface-list=aussen\n",
@@ -489,6 +496,8 @@ class Ipv6InputFirewallTests(unittest.TestCase):
                 return "  disable-ipv6: no\n"
             if command == "/ipv6 firewall filter print terse where chain=input":
                 return ""
+            if command == "/ipv6 address print terse":
+                return "0 G address=2a00:1450::1/64 interface=ether1\n"
             return ""
 
         with patch.object(core, "router", side_effect=router_stub):
@@ -535,6 +544,856 @@ class Ipv6InputFirewallTests(unittest.TestCase):
         with patch.object(core, "router", side_effect=router_stub):
             result = routes_basis._security_check_input_firewall()
         self.assertEqual(result["status"], "unknown")
+
+class InputFreigabenTests(unittest.TestCase):
+    """Enge Freigaben vor der Sperre. Die Faelle laufen auch als Wahrheitstest mit echten Paketen (mess_input.py)."""
+
+    F4 = "/ip firewall filter print terse where chain=input"
+    F6 = "/ipv6 firewall filter print terse where chain=input"
+    WAN = '/interface list member print terse where list="WAN"'
+    DIENSTE = "/ip service print terse"
+    SPERRE = "9 chain=input action=drop in-interface-list=!LAN\n"
+
+    def _tabelle(self, **extra):
+        return {self.WAN: "0 list=WAN interface=ether1\n",
+                self.DIENSTE: "0 name=ssh port=22\n1 name=www port=80\n", **extra}
+
+    def _urteil(self, regeln, pfad="/ip firewall filter", **antworten):
+        tabelle = self._tabelle(**antworten)
+        tabelle[f"{pfad} print terse where chain=input"] = regeln
+        with patch.object(core, "router", side_effect=lambda c: tabelle.get(c, "")):
+            return routes_basis._input_firewall_check(pfad)[0]
+
+    def test_standardfirewall_ipv4_ist_gruen(self):
+        self.assertIs(self._urteil(
+            "0 comment=defconf: accept established,related,untracked chain=input action=accept connection-state=established,related,untracked\n"
+            "1 comment=defconf: drop invalid chain=input action=drop connection-state=invalid\n"
+            "2 comment=defconf: accept ICMP chain=input action=accept protocol=icmp\n"
+            "3 comment=defconf: accept to local loopback (for CAPsMAN) chain=input action=accept dst-address=127.0.0.1\n"
+            "4 comment=defconf: drop all not coming from LAN chain=input action=drop in-interface-list=!LAN\n"), True)
+
+    def test_standardfirewall_ipv6_ist_gruen(self):
+        self.assertIs(self._urteil(
+            "0 chain=input action=accept connection-state=established,related,untracked\n"
+            "1 chain=input action=drop connection-state=invalid\n"
+            "2 chain=input action=accept protocol=icmpv6\n"
+            "3 chain=input action=accept protocol=udp dst-port=33434-33534\n"
+            "4 chain=input action=accept protocol=udp src-address=fe80::/10 dst-port=546\n"
+            "5 chain=input action=accept protocol=udp dst-port=500,4500\n"
+            "6 chain=input action=accept protocol=ipsec-ah\n"
+            "7 chain=input action=accept protocol=ipsec-esp\n"
+            "8 chain=input action=accept ipsec-policy=in,ipsec\n"
+            "9 chain=input action=drop in-interface-list=!LAN\n", pfad="/ipv6 firewall filter"), True)
+
+    def test_vpn_port_ist_harmlos(self):
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=udp dst-port=51820\n" + self.SPERRE), True)
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=tcp dst-port=1723\n" + self.SPERRE), True)
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=udp dst-port=500,4500,1701-1702\n" + self.SPERRE), True)
+
+    def test_loopback_als_ziel_ist_harmlos(self):
+        for wert in ("127.0.0.1", "127.0.0.1/32", "::1", "::1/128"):
+            with self.subTest(wert=wert):
+                self.assertIs(self._urteil(f"0 chain=input action=accept dst-address={wert}\n" + self.SPERRE), True)
+
+    def test_ipsec_protokolle_sind_harmlos(self):
+        for feld in ("protocol=ipsec-ah", "protocol=ipsec-esp", "ipsec-policy=in,ipsec", "protocol=icmp", "protocol=icmpv6"):
+            with self.subTest(feld=feld):
+                self.assertIs(self._urteil(f"0 chain=input action=accept {feld}\n" + self.SPERRE), True)
+
+    def test_dienste_nicht_lesbar_belegt_keinen_port(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept protocol=udp dst-port=51820\n" + self.SPERRE, **{self.DIENSTE: ""}))
+
+    def test_sprungkette_bleibt_offen(self):
+        self.assertIsNone(self._urteil("0 chain=input action=jump jump-target=x protocol=icmp\n" + self.SPERRE))
+
+    def test_ungueltige_freigabe_bleibt_offen(self):
+        self.assertIsNone(self._urteil("0 I comment=x not ready chain=input action=accept protocol=icmp\n" + self.SPERRE))
+
+    def test_freigabe_von_innen_ist_harmlos(self):
+        lan = '/interface list member print terse where list="LAN"'
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface-list=LAN\n" + self.SPERRE, **{lan: "0 list=LAN interface=bridge\n"}), True)
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface=bridge\n" + self.SPERRE), True)
+
+    def test_sprung_ohne_sperre_dahinter_bleibt_offen(self):
+        self.assertIsNone(self._urteil("0 chain=input action=jump jump-target=x\n"))
+
+    def test_hinweis_nutzt_die_kette_seiner_adressfamilie(self):
+        ergebnis = self._beide_familien("0 chain=input action=drop\n", "0 chain=input action=drop in-interface=he-tunnel\n", **{
+            self.WAN: "", self.ROUTE6: "0 DAv dst-address=::/0 immediate-gw=he-tunnel\n1 s dst-address=::/0 immediate-gw=fe80::1%lte1\n",
+            **self._name("he-tunnel", "lte1")})
+        self.assertIn("alle deine Internetanschlüsse", ergebnis["plain"])
+
+    def test_eingebaute_interfacegruppe_ist_nicht_innen(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=all-ethernet\n" + self.SPERRE))
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface-list=all\n" + self.SPERRE))
+
+    def test_liste_nicht_aufloesbar_ist_nicht_innen(self):
+        lan = '/interface list print terse where name="LAN"'
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface-list=LAN\n" + self.SPERRE, **{lan: "0 name=LAN include=all\n"}))
+
+    def _ohne_wan(self, regeln, route, *interfaces, pfad="/ip firewall filter", route_befehl='/ip route print terse where dst-address="0.0.0.0/0" and !disabled'):
+        antworten = {self.WAN: "", route_befehl: route}
+        for name in interfaces:
+            antworten[f'/interface print terse where name="{name}"'] = f"0 name={name}\n"
+        return self._urteil(regeln, pfad=pfad, **antworten)
+
+    def test_ohne_liste_wan_entscheidet_die_standardroute(self):
+        route = "0 As dst-address=0.0.0.0/0 routing-table=main gateway=192.168.1.1 immediate-gw=192.168.1.1%ether1\n"
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether1\n", route, "ether1"), True)
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether5\n", route, "ether1"), False)
+
+    def test_standardroute_ipv6_wird_getrennt_gelesen(self):
+        befehl = '/ipv6 route print terse where dst-address="::/0" and !disabled'
+        route = "0 DAv dst-address=::/0 routing-table=main gateway=pppoe-out1 immediate-gw=pppoe-out1\n"
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=pppoe-out1\n", route, "pppoe-out1", pfad="/ipv6 firewall filter", route_befehl=befehl), True)
+        self.assertIsNone(self._ohne_wan("0 chain=input action=drop in-interface=pppoe-out1\n", "", pfad="/ipv6 firewall filter", route_befehl=befehl))
+
+    def test_zwei_standardrouten_muessen_beide_gedeckt_sein(self):
+        route = ("0 As dst-address=0.0.0.0/0 routing-table=main immediate-gw=10.0.0.1%ether1\n"
+                 "1 As dst-address=0.0.0.0/0 routing-table=main immediate-gw=10.0.1.1%ether2\n")
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether1\n", route, "ether1", "ether2"), None)
+
+    def test_unsichere_routennamen_belegen_nichts(self):
+        faelle = {
+            "keine Route": "",
+            "Name unbekannt": "0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%ether1\n",
+            "Adresse statt Name": "0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1\n",
+            "ohne Feld": "0 As dst-address=0.0.0.0/0 blackhole\n",
+            "Zeichen": '0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%a"b\n',
+        }
+        for name, route in faelle.items():
+            with self.subTest(fall=name):
+                self.assertIsNone(self._ohne_wan("0 chain=input action=drop in-interface=ether1\n", route))
+
+    def test_feste_verwaltungsports_gelten_auch_ohne_eintrag_in_den_diensten(self):
+        for port in ("22", "80"):
+            with self.subTest(port=port):
+                self.assertIsNone(self._urteil(
+                    f"0 chain=input action=accept protocol=tcp dst-port={port}\n" + self.SPERRE, **{self.DIENSTE: "0 name=winbox port=8291\n"}))
+
+    def _lesefehler(self, regeln, kaputt, **antworten):
+        tabelle = self._tabelle(**antworten)
+        tabelle[self.F4] = regeln
+
+        def router(befehl):
+            if befehl == kaputt:
+                raise routes_basis.RouterCommandFailed("x")
+            return tabelle.get(befehl, "")
+
+        with patch.object(core, "router", side_effect=router):
+            return routes_basis._input_firewall_check()[0]
+
+    def test_dienste_lesefehler_belegt_keinen_port(self):
+        self.assertIsNone(self._lesefehler("0 chain=input action=accept protocol=udp dst-port=51820\n" + self.SPERRE, self.DIENSTE))
+
+    def test_routen_lesefehler_belegt_nichts(self):
+        route = '/ip route print terse where dst-address="0.0.0.0/0" and !disabled'
+        self.assertIsNone(self._lesefehler("0 chain=input action=drop in-interface=ether1\n", route, **{self.WAN: ""}))
+
+    def test_portliste_mit_text_belegt_nichts(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept protocol=tcp dst-port=abc,51820\n" + self.SPERRE))
+
+    def test_ohne_uplink_ist_keine_freigabe_innen(self):
+        self.assertIsNone(self._ohne_wan("0 chain=input action=accept in-interface=bridge\n1 chain=input action=drop\n", ""))
+
+    def test_liste_wan_und_standardroute_zaehlen_zusammen(self):
+        route = '/ip route print terse where dst-address="0.0.0.0/0" and !disabled'
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface=ether1\n", **{
+            route: "0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%ether5\n", '/interface print terse where name="ether5"': "0 name=ether5\n"}))
+
+    def test_mehrere_gateways_in_einer_route_muessen_gedeckt_sein(self):
+        route = "0 As dst-address=0.0.0.0/0 routing-table=main immediate-gw=10.0.0.1%ether1,10.0.1.1%ether2\n"
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether1\n", route, "ether1", "ether2"), None)
+
+    def test_unsicherer_routenname_landet_in_keinem_befehl(self):
+        befehle = []
+        tabelle = self._tabelle(**{
+            self.WAN: "", self.F4: "0 chain=input action=drop in-interface=ether1\n",
+            '/ip route print terse where dst-address="0.0.0.0/0" and !disabled': '0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%a"b\n'})
+
+        def router(befehl):
+            befehle.append(befehl)
+            return tabelle.get(befehl, "")
+
+        with patch.object(core, "router", side_effect=router):
+            routes_basis._input_firewall_check()
+        self.assertFalse([b for b in befehle if 'a"b' in b])
+
+    def _beide_familien(self, v4, v6, **antworten):
+        tabelle = self._tabelle(**antworten)
+        tabelle[self.F4], tabelle[self.F6] = v4, v6
+        tabelle["/ipv6 settings print"] = "  disable-ipv6: no\n"
+        with patch.object(core, "router", side_effect=lambda c: tabelle.get(c, "")):
+            return routes_basis._security_check_input_firewall()
+
+    def test_bei_zwei_offenen_fragen_bleibt_ipv4_die_erste(self):
+        frage = "0 chain=input action=accept src-address=10.0.0.1\n1 chain=input action=drop\n"
+        self.assertIn("Noch offen bei IPv4", self._beide_familien(frage, frage)["plain"])
+
+    def test_kein_befehl_bei_negiertem_port_und_bei_zwei_feldern(self):
+        for regel in ("in-interface=!ether1", "in-interface=ether1 in-interface-list=x"):
+            with self.subTest(regel=regel):
+                ergebnis = self._pruefung(f"0 chain=input action=drop {regel}\n", **{self.WAN: ""})
+                self.assertEqual(ergebnis["status"], "unknown")
+                self.assertNotIn("/interface list", ergebnis["plain"])
+                self.assertIn("nicht sicher bestimmen", ergebnis["plain"])
+
+    ROUTE4 = '/ip route print terse where dst-address="0.0.0.0/0" and !disabled'
+    ROUTE6 = '/ipv6 route print terse where dst-address="::/0" and !disabled'
+
+    def _name(self, *namen):
+        return {f'/interface print terse where name="{name}"': f"0 name={name}\n" for name in namen}
+
+    def test_sperre_ohne_den_pppoe_zugang_ist_kein_beleg(self):
+        route = "0 DAv dst-address=0.0.0.0/0 routing-table=main gateway=pppoe-out1 immediate-gw=pppoe-out1\n"
+        for regel in ("in-interface=ether1", "in-interface-list=WAN"):
+            with self.subTest(regel=regel):
+                self.assertIsNone(self._urteil(f"0 chain=input action=drop {regel}\n", **{self.ROUTE4: route}, **self._name("pppoe-out1")))
+
+    def test_liste_wan_mit_allen_wegen_ist_beleg(self):
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface-list=WAN\n", **{
+            self.WAN: "0 list=WAN interface=pppoe-out1\n", self.ROUTE4: "0 DAv dst-address=0.0.0.0/0 immediate-gw=pppoe-out1\n"}, **self._name("pppoe-out1")), True)
+
+    def test_leere_liste_wan_ohne_route_belegt_nichts(self):
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface-list=WAN\n", **{self.WAN: ""}))
+
+    def test_liste_wan_nicht_auswertbar_belegt_nichts(self):
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface-list=!LAN\n", **{'/interface list print terse where name="WAN"': "0 name=WAN include=all\n"}))
+
+    def test_nicht_lan_mit_internet_in_lan_schuetzt_nicht(self):
+        lan = '/interface list member print terse where list="LAN"'
+        self.assertIs(self._urteil(self.SPERRE, **{lan: "0 list=LAN interface=bridge\n1 list=LAN interface=ether1\n"}), False)
+
+    def test_nicht_lan_mit_einem_von_zwei_wegen_ist_kein_beleg(self):
+        lan = '/interface list member print terse where list="LAN"'
+        self.assertIsNone(self._urteil(self.SPERRE, **{
+            self.WAN: "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n", lan: "0 list=LAN interface=ether1\n"}))
+
+    def test_nicht_lan_mit_include_ist_kein_beleg(self):
+        self.assertIsNone(self._urteil(self.SPERRE, **{'/interface list print terse where name="LAN"': "0 name=LAN include=all\n"}))
+
+    def test_nicht_lan_ohne_internet_in_lan_ist_beleg(self):
+        lan = '/interface list member print terse where list="LAN"'
+        self.assertIs(self._urteil(self.SPERRE, **{lan: "0 list=LAN interface=bridge\n"}), True)
+
+    def test_inaktive_reserve_zaehlt(self):
+        route = ("0 As dst-address=0.0.0.0/0 routing-table=main gateway=10.0.0.1 immediate-gw=10.0.0.1%ether3 distance=1\n"
+                 "1  s dst-address=0.0.0.0/0 routing-table=main gateway=10.0.1.1 immediate-gw=10.0.1.1%ether5 distance=2\n")
+        self.assertIsNone(self._ohne_wan("0 chain=input action=drop in-interface=ether3\n", route, "ether3", "ether5"))
+
+    def test_freigabe_auf_der_reserve_ist_nicht_von_innen(self):
+        route = "0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%ether1\n1  s dst-address=0.0.0.0/0 immediate-gw=10.0.1.1%lte1\n"
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=lte1 protocol=tcp dst-port=8291\n" + self.SPERRE,
+                                       **{self.ROUTE4: route}, **self._name("ether1", "lte1")))
+
+    def test_blackhole_ist_kein_weg_und_kommentar_taeuscht_keinen_vor(self):
+        route = ("0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%ether1\n"
+                 "1  s comment=loch dst-address=0.0.0.0/0 routing-table=main blackhole immediate-gw= distance=4\n")
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether1\n", route, "ether1"), True)
+        route = "0 As comment=alt blackhole dst-address=0.0.0.0/0 immediate-gw=10.0.1.1%ether5\n1 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%ether1\n"
+        self.assertIsNone(self._ohne_wan("0 chain=input action=drop in-interface=ether1\n", route, "ether1", "ether5"))
+
+    def test_kommentar_kann_kein_gateway_vortaeuschen(self):
+        route = "0 As comment=immediate-gw=1.1.1.1%ether1 dst-address=0.0.0.0/0 immediate-gw=10.0.1.1%ether5\n"
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether5\n", route, "ether1", "ether5"), True)
+
+    def test_route_mit_unerreichbarem_gateway_belegt_nichts(self):
+        route = "0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%ether1\n1 Is dst-address=0.0.0.0/0 gateway=10.9.9.9 immediate-gw= distance=5\n"
+        self.assertIsNone(self._ohne_wan("0 chain=input action=drop in-interface=ether1\n", route, "ether1"))
+
+    def test_route_nur_mit_interface_als_gateway(self):
+        route = "0 Is dst-address=0.0.0.0/0 gateway=pppoe-out1 immediate-gw= distance=1\n"
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=pppoe-out1\n", route, "pppoe-out1"), True)
+
+    def test_anschluss_in_einer_vrf_ist_nicht_auswertbar(self):
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface=ether1\n", **{
+            "/ip vrf print terse": "0   name=vrf5 interfaces=ether1,ether9\n1 * name=main interfaces=all\n"}))
+
+    def test_fremde_vrf_stoert_nicht(self):
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface=ether1\n", **{
+            "/ip vrf print terse": "0   name=vrf5 interfaces=ether5\n1 * name=main interfaces=all\n"}), True)
+
+    def test_anschluss_als_bridge_port_ist_nicht_auswertbar(self):
+        port = '/interface bridge port print terse where interface="ether1"'
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface-list=WAN\n", **{port: "0 interface=ether1 bridge=br\n"}))
+
+    def test_vrf_oder_bridge_nicht_lesbar_belegt_nichts(self):
+        for kaputt in ("/ip vrf print terse", '/interface bridge port print terse where interface="ether1"'):
+            with self.subTest(kaputt=kaputt):
+                self.assertIsNone(self._lesefehler("0 chain=input action=drop in-interface=ether1\n", kaputt))
+
+    def test_name_mit_leerzeichen_in_der_liste_ist_nicht_auswertbar(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=bridge\n" + self.SPERRE, **{self.WAN: "0 list=WAN interface=pppoe 2\n"}))
+
+    def test_freigabe_von_innen_sieht_die_ipv4_route_auch_in_der_ipv6_kette(self):
+        route = "0 DAv dst-address=0.0.0.0/0 immediate-gw=pppoe-out1\n"
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=pppoe-out1\n" + self.SPERRE, pfad="/ipv6 firewall filter",
+                                       **{self.ROUTE4: route}, **self._name("pppoe-out1")))
+
+    def test_freigabe_von_innen_sieht_die_ipv6_route_auch_in_der_ipv4_kette(self):
+        route = "0 DAv dst-address=::/0 immediate-gw=he-tunnel\n"
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=he-tunnel\n" + self.SPERRE, **{self.ROUTE6: route}, **self._name("he-tunnel")))
+
+    def test_route_nicht_lesbar_macht_nichts_zu_innen(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=bridge\n" + self.SPERRE, **{
+            self.ROUTE4: '0 As dst-address=0.0.0.0/0 immediate-gw=10.0.0.1%pppoe"2\n'}))
+
+    def test_sperre_nur_fuer_ipv4_route_gilt_nur_fuer_ipv4(self):
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface=ether1\n", **{
+            self.ROUTE6: "0 DAv dst-address=::/0 immediate-gw=he-tunnel\n"}, **self._name("he-tunnel")), True)
+
+    def test_interfacegruppen_in_der_sperre_belegen_nichts(self):
+        for regel in ("in-interface=!all-ppp", "in-interface=all-ppp", "in-interface=all-ethernet"):
+            with self.subTest(regel=regel):
+                self.assertIsNone(self._urteil(f"0 chain=input action=drop {regel}\n", **{self.WAN: "0 list=WAN interface=pppoe-out1\n"}))
+
+    def test_neue_verbindungen_ohne_tracking_belegen_nichts(self):
+        self.assertIsNone(self._urteil("0 chain=input action=drop connection-state=new in-interface-list=!LAN\n", **{
+            "/ip firewall connection tracking print": "  enabled: no\n"}))
+
+    def test_neue_verbindungen_mit_tracking_sind_beleg(self):
+        self.assertIs(self._urteil("0 chain=input action=drop connection-state=new in-interface-list=!LAN\n", **{
+            "/ip firewall connection tracking print": "  enabled: yes\n"}), True)
+
+    def test_dynamische_vpn_und_client_dienste_zaehlen_nicht_als_verwaltung(self):
+        dienste = ("0 D name=wireguard-wg1 port=51820 proto=udp\n1 D name=ntp port=123 proto=udp\n2 D name=ipsec port=500 proto=udp\n"
+                   "3 D name=ipsec port=4500 proto=udp\n4 D name=dhcpclient port=546 proto=udp\n5 D name=dhcp port=547 proto=udp\n6 name=ssh port=2223 proto=tcp\n"
+                   "7 D name=ovpn-server port=1194 proto=tcp\n8 D name=l2tp port=1701 proto=udp\n9 D name=ppp port=1723 proto=tcp\n10 D name=sstp-server port=4443 proto=tcp\n")
+        for regel in ("protocol=udp dst-port=51820", "protocol=udp dst-port=123", "protocol=udp dst-port=500,4500", "protocol=udp dst-port=546", "protocol=udp dst-port=547",
+                      "protocol=tcp dst-port=1194", "protocol=udp dst-port=1701", "protocol=tcp dst-port=1723", "protocol=tcp dst-port=4443"):
+            with self.subTest(regel=regel):
+                self.assertIs(self._urteil(f"0 chain=input action=accept {regel}\n" + self.SPERRE, **{self.DIENSTE: dienste}), True)
+
+    def test_dynamische_verwaltungsdienste_zaehlen(self):
+        for name, port in (("socks", 1081), ("wproxy", 3128), ("unbekannt", 9999)):
+            with self.subTest(name=name):
+                self.assertIsNone(self._urteil(f"0 chain=input action=accept protocol=tcp dst-port={port}\n" + self.SPERRE, **{
+                    self.DIENSTE: f"0 D name={name} port={port} proto=tcp\n"}))
+
+    def test_laufende_verbindung_in_den_diensten_zaehlt_nicht(self):
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=tcp dst-port=7000\n" + self.SPERRE, **{
+            self.DIENSTE: "0 D c name=ssh port=7000 proto=tcp local=10.0.0.1 remote=10.0.0.2:1\n1 name=winbox port=8291\n"}), True)
+
+    def test_loopback_mit_weiterleitung_bleibt_offen(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept dst-address=127.0.0.1\n" + self.SPERRE, **{
+            "/ip firewall nat print terse": "0 chain=dstnat action=dst-nat to-addresses=127.0.0.1 to-ports=80\n"}))
+        self.assertIsNone(self._urteil("0 chain=input action=accept dst-address=::1\n" + self.SPERRE, **{
+            "/ipv6 firewall nat print terse": "0 chain=dstnat action=dst-nat to-address=::1/128 to-ports=80\n"}))
+
+    def test_nat_nicht_lesbar_belegt_loopback_nicht(self):
+        self.assertIsNone(self._lesefehler("0 chain=input action=accept dst-address=127.0.0.1\n" + self.SPERRE, "/ip firewall nat print terse"))
+
+    def test_freigabe_ohne_sperre_dahinter_ist_offen(self):
+        self.assertIs(self._urteil("0 chain=input action=accept src-address=10.0.0.1\n"), False)
+        self.assertIs(self._urteil("0 chain=input action=accept src-address=10.0.0.1\n1 chain=input action=drop protocol=tcp dst-port=22\n"), False)
+
+    def test_freigabe_mit_unklarem_rest_bleibt_offen(self):
+        for rest in ("1 chain=input action=jump jump-target=x\n", "1 chain=input action=return\n", "1 comment=a chain=b chain=input action=drop\n",
+                     "1 chain=input action=drop in-interface=ether1 in-interface-list=x\n"):
+            with self.subTest(rest=rest):
+                self.assertIsNone(self._urteil("0 chain=input action=accept src-address=10.0.0.1\n" + rest))
+
+    def test_unklare_sperre_vor_der_freigabe_bleibt_offen(self):
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface=ether1 in-interface-list=x\n1 chain=input action=accept src-address=10.0.0.1\n"))
+
+    def test_sprungregel_hat_eigenen_hinweis(self):
+        ergebnis = self._pruefung("0 chain=input action=jump jump-target=x\n" + self.SPERRE)
+        self.assertIn("leitet Pakete aus dieser Kette heraus", ergebnis["plain"])
+        self.assertNotIn("denen du vertraust", ergebnis["plain"])
+
+    def test_teilweise_sperre_nennt_alle_anschluesse_statt_fehlender_liste(self):
+        ergebnis = self._pruefung("0 chain=input action=drop in-interface=ether1\n", **{self.WAN: "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"})
+        self.assertIn("alle deine Internetanschlüsse", ergebnis["plain"])
+        self.assertNotIn("/interface list", ergebnis["plain"])
+
+    def test_befehl_nennt_die_nebenwirkung(self):
+        ergebnis = self._pruefung("0 chain=input action=drop in-interface=ether1\n", **{self.WAN: ""})
+        self.assertIn(":if ([:len [/interface list find name=WAN]]=0)", ergebnis["plain"])
+        self.assertIn("gelten danach auch", ergebnis["plain"])
+
+    def test_access_point_nur_wenn_jede_rote_familie_keine_sperre_hat(self):
+        self.assertNotIn("Access Point", self._beide_familien("0 chain=input action=accept\n", "", **{self.IPV6_ADRESSEN: "0 G address=2a00:1450::1/64 interface=ether2\n"})["plain"])
+        self.assertIn("Access Point", self._beide_familien("", "")["plain"])
+
+    def test_negierte_werte_sind_kein_beleg(self):
+        for feld in ("protocol=!icmp", "protocol=tcp dst-port=!51820", "dst-address=!127.0.0.1", "ipsec-policy=out,ipsec", "ipsec-policy=in,none"):
+            with self.subTest(feld=feld):
+                self.assertIsNone(self._urteil(f"0 chain=input action=accept {feld}\n" + self.SPERRE))
+
+    def test_verwaltungsport_ohne_offenen_dienst_bleibt_offen(self):
+        for port in ("20", "21", "22", "23", "53", "69", "80", "161", "443", "445", "1080", "1812", "1813", "2000", "2049", "2828",
+                     "3260", "3799", "4420", "5246", "5247", "5351", "5678", "8080", "8291", "8728", "8729",
+                     "21,51820", "20-30", "8000-9000", "79-80"):
+            with self.subTest(port=port):
+                self.assertIsNone(self._urteil(f"0 chain=input action=accept protocol=tcp dst-port={port}\n" + self.SPERRE, **{self.DIENSTE: "0 X name=z port=9999 proto=tcp\n"}))
+
+    def test_umgelegter_verwaltungsport_wird_rot(self):
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=tcp dst-port=8081\n" + self.SPERRE, **{self.DIENSTE: "0 name=www port=8081 proto=tcp\n"}), False)
+
+    def test_statischer_dienst_mit_vpn_namen_zaehlt(self):
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=udp dst-port=7000\n" + self.SPERRE, **{self.DIENSTE: "0 name=ntp port=7000 proto=udp\n"}), False)
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=udp dst-port=7000\n" + self.SPERRE, **{self.DIENSTE: "0 name=wireguard-x port=7000 proto=udp\n"}), False)
+
+    def test_port_als_text_und_fremde_adressen_bleiben_offen(self):
+        for feld in ("protocol=tcp dst-port=abc", "src-address=10.0.0.1", "src-address-list=vertraut", "dst-address=192.168.88.1", "protocol=gre"):
+            with self.subTest(feld=feld):
+                self.assertIsNone(self._urteil(f"0 chain=input action=accept {feld}\n" + self.SPERRE))
+
+    def test_freigabe_auf_dem_internetanschluss_wird_rot(self):
+        lan = '/interface list member print terse where list="LAN"'
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface-list=LAN\n1 chain=input action=drop\n", **{lan: "0 list=LAN interface=ether1\n"}), False)
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface=ether1\n" + self.SPERRE), False)
+
+    def test_internetanschluss_fehlt_in_der_liste_wan(self):
+        route = '/ip route print terse where dst-address="0.0.0.0/0" and !disabled'
+        pppoe = '/interface print terse where name="pppoe-out1"'
+        self.assertIs(self._urteil(
+            "0 chain=input action=accept in-interface=pppoe-out1\n" + self.SPERRE,
+            **{route: "0 DAv dst-address=0.0.0.0/0 routing-table=main gateway=pppoe-out1 immediate-gw=pppoe-out1\n", pppoe: "0 R name=pppoe-out1\n"}), False)
+
+    def test_access_point_auch_wenn_nur_ipv6_keine_sperre_hat(self):
+        ergebnis = self._beide_familien("0 chain=input action=drop\n", "", **{self.IPV6_ADRESSEN: "0 G address=2a00:1450::1/64 interface=ether2\n"})
+        self.assertIn("Access Point", ergebnis["plain"])
+
+    def test_befehl_nicht_bei_anschluss_in_einer_bridge(self):
+        port = '/interface bridge port print terse where interface="ether1"'
+        ergebnis = self._pruefung("0 chain=input action=drop in-interface=ether1\n", **{port: "0 interface=ether1 bridge=br\n"})
+        self.assertEqual(ergebnis["status"], "unknown")
+        self.assertNotIn("/interface list", ergebnis["plain"])
+        self.assertIn("Bridge oder VRF", ergebnis["plain"])
+
+    def test_verwaltungsdienst_aus_dem_internet_wird_rot(self):
+        for regel in ("protocol=tcp dst-port=80", "protocol=tcp dst-port=22,51820", "protocol=tcp dst-port=20-30", "protocol=tcp",
+                      "in-interface=ether1", "in-interface-list=WAN", "in-interface=ether1 protocol=tcp dst-port=80"):
+            with self.subTest(regel=regel):
+                self.assertIs(self._urteil(f"0 chain=input action=accept {regel}\n1 chain=input action=drop\n"), False)
+
+    def test_rote_freigabe_nennt_die_regel(self):
+        ergebnis = self._pruefung("0 chain=input action=accept protocol=tcp dst-port=80\n" + self.SPERRE)
+        self.assertEqual(ergebnis["status"], "warn")
+        self.assertIn("IPv4: Die Regel „accept protocol=tcp dst-port=80“ öffnet die Verwaltung", ergebnis["plain"])
+        self.assertIn("öffnet einen Verwaltungsdienst", ergebnis["detail"])
+
+    def test_dienst_ist_nur_mit_offenem_zugang_ein_beleg(self):
+        regel = "0 chain=input action=accept protocol=tcp dst-port=80\n1 chain=input action=drop\n"
+        for dienst in ("0 X name=www port=80 proto=tcp\n", "0 name=www port=80 proto=tcp available-from=10.0.0.0/8\n",
+                       "0 D name=www port=80 proto=tcp\n", "0 D c name=www port=80 proto=tcp local=1.1.1.1 remote=2.2.2.2:3\n",
+                       "0 name=www port=80 proto=udp\n"):
+            with self.subTest(dienst=dienst):
+                self.assertIsNone(self._urteil(regel, **{self.DIENSTE: dienst}))
+
+    def test_dienst_ohne_protokollangabe_gilt_als_tcp(self):
+        self.assertIs(self._urteil("0 chain=input action=accept protocol=tcp dst-port=80\n1 chain=input action=drop\n", **{self.DIENSTE: "0 name=www port=80\n"}), False)
+
+    def test_weitere_bedingung_ist_kein_beleg_fuer_offen(self):
+        for regel in ("src-address=10.0.0.1 protocol=tcp dst-port=80", "protocol=tcp dst-port=80 limit=5,5:packet", "protocol=gre", "dst-port=80", "protocol=tcp dst-port=abc"):
+            with self.subTest(regel=regel):
+                self.assertIsNone(self._urteil(f"0 chain=input action=accept {regel}\n1 chain=input action=drop\n"))
+
+    def test_freigabe_auf_fremdem_interface_ist_kein_beleg_fuer_offen(self):
+        lan = '/interface list member print terse where list="LAN"'
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface=bridge protocol=tcp dst-port=80\n" + self.SPERRE), True)
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface-list=LAN protocol=tcp dst-port=80\n" + self.SPERRE, **{lan: "0 list=LAN interface=bridge\n"}), True)
+
+    def test_ohne_bekannten_anschluss_ist_eine_freigabe_kein_beleg(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept protocol=tcp dst-port=80\n1 chain=input action=drop\n", **{self.WAN: ""}))
+
+    def test_freigabe_hinter_der_sperre_kommt_nie_an(self):
+        wan = "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface=ether1\n1 chain=input action=accept in-interface=ether1 protocol=tcp dst-port=80\n2 chain=input action=drop\n", **{self.WAN: wan}))
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface=ether1\n1 chain=input action=accept in-interface=lte1 protocol=tcp dst-port=80\n2 chain=input action=drop\n", **{self.WAN: wan}), False)
+
+    def test_zwei_sperren_decken_zusammen_alle_wege(self):
+        wan = "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface=ether1\n1 chain=input action=drop in-interface=lte1\n", **{self.WAN: wan}), True)
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface=ether1\n", **{self.WAN: wan}))
+
+    def test_zustandssperre_zaehlt_nicht_fuer_die_deckung(self):
+        wan = "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"
+        self.assertIsNone(self._urteil("0 chain=input action=drop connection-state=new in-interface=ether1\n1 chain=input action=drop in-interface=lte1\n", **{
+            self.WAN: wan, "/ip firewall connection tracking print": "  enabled: no\n"}))
+
+    def test_negierte_sperre_trifft_teilweise(self):
+        wan = "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface=!ether1\n", **{self.WAN: wan}))
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface=!ether1\n"), False)
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface=!bridge\n"), True)
+
+    def test_negierte_freigabe_ohne_den_anschluss_ist_von_innen(self):
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface=!ether1\n" + self.SPERRE), True)
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface-list=!WAN\n" + self.SPERRE), True)
+
+    def test_negierte_freigabe_mit_dem_anschluss_ist_nicht_von_innen(self):
+        self.assertIs(self._urteil("0 chain=input action=accept in-interface=!bridge\n1 chain=input action=drop\n"), False)
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=!bridge src-address=10.0.0.1\n1 chain=input action=drop\n"))
+
+    def test_oeffentliche_adresse_zaehlt_als_weg_ins_internet(self):
+        adressen = "/ip address print terse"
+        zeile = {adressen: "0 address=8.8.4.4/24 network=8.8.4.0 interface=ether2\n1 address=192.168.1.1/24 network=192.168.1.0 interface=bridge\n"}
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface-list=WAN\n", **zeile))
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface-list=!LAN\n", **zeile), True)
+
+    def test_private_adresse_ist_kein_weg_ins_internet(self):
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface-list=WAN\n", **{"/ip address print terse": "0 address=192.168.100.2/24 interface=ether2\n"}), True)
+
+    def test_adressen_nicht_lesbar_belegen_nichts(self):
+        self.assertIsNone(self._lesefehler("0 chain=input action=drop in-interface-list=WAN\n", "/ip address print terse"))
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface-list=WAN\n", **{"/ip address print terse": "0 address=kaputt interface=ether2\n"}))
+
+    def test_oeffentliche_ipv4_adresse_zaehlt_in_der_ipv6_kette_nicht_fuer_sperren(self):
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface-list=WAN\n", pfad="/ipv6 firewall filter", **{"/ip address print terse": "0 address=8.8.4.4/24 interface=ether2\n"}), True)
+
+    def test_oeffentliche_ipv4_adresse_zaehlt_fuer_freigaben_auch_in_der_ipv6_kette(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept in-interface=ether2 src-address=fd00::1\n" + self.SPERRE, pfad="/ipv6 firewall filter", **{"/ip address print terse": "0 address=8.8.4.4/24 interface=ether2\n"}))
+
+    DETECT = "/interface detect-internet print"
+
+    def test_detect_internet_liste_belegt_nichts(self):
+        for feld in ("lan-interface-list", "wan-interface-list", "internet-interface-list"):
+            with self.subTest(feld=feld):
+                liste = "LAN" if feld.startswith("lan") else "WAN"
+                self.assertIsNone(self._urteil(f"0 chain=input action=drop in-interface-list=!{liste}\n", **{self.DETECT: f"  {feld}: {liste}\n"}))
+
+    def test_detect_internet_auf_der_liste_wan_belegt_auch_interface_regeln_nicht(self):
+        self.assertIsNone(self._urteil("0 chain=input action=drop in-interface=ether1\n", **{self.DETECT: "  wan-interface-list: WAN\n"}))
+
+    def test_sperre_in_der_ipv6_kette_nutzt_die_ipv6_route(self):
+        befehl = '/ipv6 route print terse where dst-address="::/0" and !disabled'
+        route = "0 As dst-address=::/0 immediate-gw=he-tunnel\n"
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether5\n", route, "he-tunnel", pfad="/ipv6 firewall filter", route_befehl=befehl), False)
+
+    def test_detect_internet_nicht_lesbar_belegt_auch_interface_regeln_nicht(self):
+        self.assertIsNone(self._lesefehler("0 chain=input action=drop in-interface=ether1\n", self.DETECT))
+
+    def test_dienst_mit_altem_adressfeld_ist_kein_beleg(self):
+        self.assertIsNone(self._urteil("0 chain=input action=accept protocol=tcp dst-port=80\n1 chain=input action=drop\n", **{self.DIENSTE: "0 name=www port=80 proto=tcp address=10.0.0.0/8\n"}))
+
+    def test_rat_passt_zur_adressfamilie(self):
+        global_v6 = {self.IPV6_ADRESSEN: "0 G address=2a00:1450::1/64 interface=ether2\n"}
+        nur_v6 = self._beide_familien("0 chain=input action=drop\n", "", **global_v6)["plain"]
+        self.assertIn("Für IPv6 nimm", nur_v6)
+        self.assertNotIn("/ip firewall filter add", nur_v6)
+        nur_v4 = self._beide_familien("", "0 chain=input action=drop\n")["plain"]
+        self.assertIn("/ip firewall filter add chain=input action=accept connection-state=established,related,untracked", nur_v4)
+        self.assertNotIn("Für IPv6 nimm", nur_v4)
+        beide = self._beide_familien("", "", **global_v6)["plain"]
+        self.assertIn("Für IPv6 nimm", beide)
+        self.assertIn("/ip firewall filter add", beide)
+
+    def test_allgemeine_freigabe_nennt_den_grund_statt_den_rat(self):
+        plain = self._pruefung("0 chain=input action=accept\n1 chain=input action=drop\n")["plain"]
+        self.assertIn("IPv4: Eine Freigabe ohne jede Bedingung", plain)
+        self.assertNotIn("/ip firewall filter add", plain)
+
+    def test_prueflauf_liest_jeden_weg_nur_einmal(self):
+        befehle = []
+        tabelle = self._tabelle()
+        tabelle[self.F4] = "".join(f"{i} chain=input action=accept in-interface=bridge{i}\n" for i in range(30)) + self.SPERRE
+
+        def router(befehl):
+            befehle.append(befehl)
+            return tabelle.get(befehl, "")
+
+        with patch.object(core, "router", side_effect=router):
+            self.assertIs(routes_basis._input_firewall_check()[0], True)
+        # Einmal fuer Sperren, einmal fuer Freigaben, die beide Adressfamilien sehen muessen.
+        self.assertLessEqual(befehle.count(self.WAN), 2)
+        self.assertLess(len(befehle), 30)
+
+    def test_naechster_prueflauf_liest_frisch(self):
+        befehle = []
+
+        def router(befehl):
+            befehle.append(befehl)
+            return self._tabelle(**{self.F4: self.SPERRE}).get(befehl, "")
+
+        with patch.object(core, "router", side_effect=router):
+            routes_basis._input_firewall_check()
+            routes_basis._input_firewall_check()
+        self.assertEqual(befehle.count(self.WAN), 2)
+
+    def test_detect_internet_aus_stoert_nicht(self):
+        self.assertIs(self._urteil(self.SPERRE, **{self.DETECT: "  lan-interface-list: none\n  wan-interface-list: none\n"}), True)
+
+    def test_detect_internet_nicht_lesbar_belegt_nichts(self):
+        self.assertIsNone(self._lesefehler(self.SPERRE, self.DETECT))
+
+    def test_tracking_aus_nennt_den_grund(self):
+        ergebnis = self._pruefung("0 chain=input action=accept connection-state=established\n" + self.SPERRE, **{"/ip firewall connection tracking print": "  enabled: no\n"})
+        self.assertEqual(ergebnis["status"], "unknown")
+        self.assertIn("Verbindungsverfolgung ist abgeschaltet", ergebnis["plain"])
+        ergebnis = self._pruefung("0 chain=input action=drop connection-state=new in-interface-list=!LAN\n", **{"/ip firewall connection tracking print": "  enabled: no\n"})
+        self.assertIn("Verbindungsverfolgung ist abgeschaltet", ergebnis["plain"])
+
+    def test_nicht_belegte_anschluesse_werden_genannt(self):
+        ergebnis = self._pruefung("0 chain=input action=drop in-interface=ether1\n", **{self.WAN: "0 list=WAN interface=ether1\n1 list=WAN interface=lte1\n"})
+        self.assertIn("Nicht belegt: lte1.", ergebnis["plain"])
+        self.assertNotIn("/interface list", ergebnis["plain"])
+
+    def test_befehl_nur_ohne_jeden_bekannten_anschluss(self):
+        route = '/ip route print terse where dst-address="0.0.0.0/0" and !disabled'
+        for extra in ({route: "0 Is dst-address=0.0.0.0/0 gateway=10.9.9.9 immediate-gw=\n"},
+                      {'/interface list print terse where name="WAN"': "0 name=WAN include=all\n"}):
+            with self.subTest(extra=list(extra)):
+                ergebnis = self._pruefung("0 chain=input action=drop in-interface=ether1\n", **{self.WAN: "", **extra})
+                self.assertEqual(ergebnis["status"], "unknown")
+                self.assertNotIn("/interface list", ergebnis["plain"])
+                self.assertIn("nicht sicher bestimmen", ergebnis["plain"])
+
+    def test_routenkommentar_blendet_keine_reserve_aus(self):
+        route = "1 s comment=alt dst-address=x blackhole dst-address=0.0.0.0/0 immediate-gw=10.0.1.1%ether5\n"
+        self.assertIs(self._ohne_wan("0 chain=input action=drop in-interface=ether5\n", route, "ether5"), True)
+
+    IPV6_ADRESSEN = "/ipv6 address print terse"
+
+    def test_ipv6_ohne_globale_adresse_und_route_warnt_nicht(self):
+        ergebnis = self._beide_familien("0 chain=input action=drop\n", "", **{self.IPV6_ADRESSEN: "0 DL address=fe80::1/64 interface=ether1\n1 G address=fd00::1/64 interface=ether2\n"})
+        self.assertEqual(ergebnis["status"], "good")
+        self.assertIn("kein Weg aus dem Internet", ergebnis["detail"])
+
+    def test_ipv6_mit_globaler_adresse_oder_route_warnt(self):
+        for extra in ({self.IPV6_ADRESSEN: "0 G address=2a00:1450::1/64 interface=ether2\n"},
+                      {self.ROUTE6: "0 As dst-address=::/0 immediate-gw=fe80::1%ether1\n", **self._name("ether1")},
+                      {self.ROUTE6: '0 As dst-address=::/0 immediate-gw=fe80::1%a"b\n'},
+                      {self.IPV6_ADRESSEN: "0 G address=kaputt interface=ether2\n"}):
+            with self.subTest(extra=list(extra)):
+                self.assertEqual(self._beide_familien("0 chain=input action=drop\n", "", **extra)["status"], "warn")
+
+    def test_ipv6_adressen_nicht_lesbar_warnt(self):
+        tabelle = self._tabelle()
+        tabelle[self.F4], tabelle[self.F6], tabelle["/ipv6 settings print"] = "0 chain=input action=drop\n", "", "  disable-ipv6: no\n"
+
+        def router(befehl):
+            if befehl == self.IPV6_ADRESSEN:
+                raise routes_basis.RouterCommandFailed("x")
+            return tabelle.get(befehl, "")
+
+        with patch.object(core, "router", side_effect=router):
+            self.assertEqual(routes_basis._security_check_input_firewall()["status"], "warn")
+
+    def test_ipv6_ohne_internet_gilt_nur_bei_fehlender_sperre(self):
+        ergebnis = self._beide_familien("0 chain=input action=drop\n", "0 chain=input action=accept\n1 chain=input action=drop\n")
+        self.assertEqual(ergebnis["status"], "warn")
+
+    def test_warnung_nennt_einen_befehl_mit_verwaltungszugang(self):
+        ergebnis = self._pruefung("")
+        self.assertIn("Verwaltungszugang in der Liste LAN", ergebnis["plain"])
+        self.assertIn("/ip firewall filter add chain=input action=drop in-interface-list=!LAN", ergebnis["plain"])
+
+    def test_timeout_beim_lesen_bleibt_offen(self):
+        from routeros import RouterTimeout
+        for kaputt in (self.F4, self.WAN):
+            with self.subTest(kaputt=kaputt):
+                tabelle = self._tabelle()
+                tabelle[self.F4] = "0 chain=input action=drop in-interface=ether1\n"
+
+                def router(befehl):
+                    if befehl == kaputt:
+                        raise RouterTimeout("x")
+                    return tabelle.get(befehl, "")
+
+                with patch.object(core, "router", side_effect=router):
+                    self.assertIsNone(routes_basis._input_firewall_check()[0])
+
+    def test_nur_eine_sperre_auf_fremdem_port_bleibt_warnung(self):
+        self.assertIs(self._urteil("0 chain=input action=drop in-interface=ether5\n"), False)
+
+    def _pruefung(self, regeln, **antworten):
+        tabelle = self._tabelle(**antworten)
+        tabelle[self.F4] = regeln
+        tabelle[self.F6] = "0 chain=input action=drop\n"
+        tabelle["/ipv6 settings print"] = "  disable-ipv6: no\n"
+        with patch.object(core, "router", side_effect=lambda c: tabelle.get(c, "")):
+            return routes_basis._security_check_input_firewall()
+
+    def test_offene_frage_nennt_die_regel(self):
+        ergebnis = self._pruefung("0 chain=input action=accept src-address=10.0.0.1\n" + self.SPERRE)
+        self.assertEqual(ergebnis["status"], "unknown")
+        self.assertIn("Noch offen bei IPv4", ergebnis["plain"])
+        self.assertIn("accept src-address=10.0.0.1", ergebnis["plain"])
+        self.assertIn("auch nicht, dass alles sicher ist", ergebnis["plain"])
+
+    def test_offene_frage_nennt_die_erste_unklare_sperre_und_den_befehl(self):
+        ergebnis = self._pruefung(
+            "0 chain=input action=drop in-interface=ether1\n1 chain=input action=drop in-interface=ether7\n", **{self.WAN: ""})
+        self.assertEqual(ergebnis["status"], "unknown")
+        self.assertIn("drop in-interface=ether1“", ergebnis["plain"])
+        self.assertIn('/interface list member add list=WAN interface="ether1"', ergebnis["plain"])
+
+    def test_offene_frage_nennt_ipv6_wenn_nur_dort_offen(self):
+        tabelle = self._tabelle()
+        tabelle[self.F4] = "0 chain=input action=drop\n"
+        tabelle[self.F6] = "0 chain=input action=accept src-address=fd00::1\n1 chain=input action=drop\n"
+        tabelle["/ipv6 settings print"] = "  disable-ipv6: no\n"
+        with patch.object(core, "router", side_effect=lambda c: tabelle.get(c, "")):
+            ergebnis = routes_basis._security_check_input_firewall()
+        self.assertIn("Noch offen bei IPv6", ergebnis["plain"])
+        self.assertIn("src-address=fd00::1", ergebnis["plain"])
+
+    def test_warnung_ohne_sperre_nennt_den_access_point(self):
+        ergebnis = self._pruefung("")
+        self.assertEqual(ergebnis["status"], "warn")
+        self.assertIn("Access Point", ergebnis["plain"])
+
+    def test_warnung_mit_breiter_freigabe_nennt_keinen_access_point(self):
+        ergebnis = self._pruefung("0 chain=input action=accept\n1 chain=input action=drop\n")
+        self.assertEqual(ergebnis["status"], "warn")
+        self.assertNotIn("Access Point", ergebnis["plain"])
+
+    def test_lange_regel_wird_gekuerzt(self):
+        self.assertLessEqual(len(routes_basis._regel_kurz({"action": "accept", "src-address-list": "x" * 300})), 100)
+
+
+class GeleseneNamenTests(unittest.TestCase):
+    """Am CHR gemessen: RouterOS nimmt Namen mit " und ; an, ein so eingebetteter Befehl laeuft wirklich."""
+
+    BOESE = 'x"; /system reboot; :put "y'
+
+    def _befehle(self, funktion, tabelle):
+        befehle = []
+
+        def router(befehl):
+            befehle.append(befehl)
+            return tabelle.get(befehl, "")
+
+        with patch.object(core, "router", side_effect=router):
+            ergebnis = funktion()
+        self.assertFalse([b for b in befehle if "reboot" in b], befehle)
+        return ergebnis
+
+    def test_gelesener_name(self):
+        self.assertEqual(core._gelesener_name("ether1"), "ether1")
+        self.assertEqual(core._gelesener_name("a b"), "a b")
+        for name in (self.BOESE, "a;b", 'a"b', "", None, "a\nb", "br$1", "a\\b"):
+            with self.subTest(name=name), self.assertRaises(routes_basis.RouterCommandFailed):
+                core._gelesener_name(name)
+
+    def test_bridge_mit_dollar_zeichen_wird_nicht_zum_falschen_gruen(self):
+        befehl = '/interface bridge port print terse where interface="ether2"'
+        with patch.object(core, "router", side_effect=lambda c: "0 interface=ether2 bridge=br$1\n" if c == befehl else ""):
+            with self.assertRaises(routes_basis.RouterCommandFailed):
+                core._bridge_port_of("ether2")
+
+    def test_unsicherer_name_ist_ein_eigener_fehler(self):
+        from routeros import RouterWertUnsicher
+        with self.assertRaises(RouterWertUnsicher):
+            core._gelesener_name(self.BOESE)
+    def test_liste_aus_einer_regel(self):
+        self.assertIsNone(self._befehle(lambda: core._resolve_interface_list_members(self.BOESE), {}))
+
+    def test_liste_im_input_check(self):
+        regel = f"0 chain=input action=drop in-interface-list={self.BOESE}\n"
+        self.assertIsNot(self._befehle(routes_basis._input_firewall_check, {
+            "/ip firewall filter print terse where chain=input": regel,
+            '/interface list member print terse where list="WAN"': "0 list=WAN interface=ether1\n"})[0], True)
+
+    def test_eingang_in_der_absenderpruefung(self):
+        self.assertFalse(self._befehle(
+            lambda: core._absender_schliesst_gast_aus({"src-address": "10.0.0.0/8"}, {self.BOESE}, "/ip firewall filter"),
+            {"/ip settings print": "  rp-filter: strict\n"}))
+
+    def test_port_aus_der_vlan_tabelle(self):
+        tabelle = {
+            '/interface bridge port print terse where interface="guest"': "0 interface=guest bridge=br1 pvid=20 ingress-filtering=yes frame-types=admit-only-untagged\n",
+            '/interface bridge print terse where name="br1"': "0 name=br1 vlan-filtering=yes pvid=1\n",
+            '/interface bridge port print terse where bridge="br1"': "0 interface=guest bridge=br1 pvid=20\n1 interface=ether2 bridge=br1 pvid=1\n",
+            '/interface list member print terse where list="LAN"': "0 list=LAN interface=br1\n",
+            '/interface bridge vlan print terse where bridge="br1"': f"0 bridge=br1 vlan-ids=20 tagged=br1 untagged=guest current-tagged=br1 current-untagged=guest,{self.BOESE}\n",
+            '/interface print terse where name="guest"': "0 name=guest\n",
+        }
+        self.assertIsNone(self._befehle(lambda: core._vlan_isolation("guest", "br1"), tabelle))
+
+    def test_wan_kandidat_mit_unsicherem_namen_zaehlt_nicht(self):
+        for befehl, zeile in (('/ip dhcp-client print terse where status="bound"', f"0 interface={self.BOESE}\n"),
+                              ("/interface pppoe-client print terse", f"0 R name={self.BOESE}\n")):
+            with self.subTest(befehl=befehl), patch.object(core, "current_conn", return_value={}):
+                with patch.object(core, "router", side_effect=lambda c, z=zeile, b=befehl: z if c == b else ""):
+                    with self.assertRaises(routes_basis.WanInterfaceUnavailable):
+                        routes_basis._wan_interface()
+
+    def test_wan_kandidat_neben_einem_unsicheren_namen_bleibt_gueltig(self):
+        tabelle = {'/ip dhcp-client print terse where status="bound"': f"0 interface={self.BOESE}\n1 interface=ether5\n"}
+        with patch.object(core, "current_conn", return_value={}), patch.object(core, "router", side_effect=lambda c: tabelle.get(c, "")):
+            self.assertEqual(routes_basis._wan_interface(), "ether5")
+
+    def test_vlan_name_im_gast_eingang(self):
+        tabelle = {
+            '/interface bridge port print terse where interface="ether2"': "0 interface=ether2 bridge=br pvid=20\n",
+            '/interface bridge print terse where name="br"': "0 name=br vlan-filtering=yes pvid=1\n",
+            '/interface vlan print terse where interface="br"': f"0 name={self.BOESE} interface=br vlan-id=20\n",
+        }
+        self.assertIsNone(self._befehle(lambda: core._gast_eingang("ether2"), tabelle))
+    def test_bridge_name(self):
+        befehl = '/interface bridge port print terse where interface="ether2"'
+        with patch.object(core, "router", side_effect=lambda c: f"0 interface=ether2 bridge={self.BOESE}\n" if c == befehl else ""):
+            with self.assertRaises(routes_basis.RouterCommandFailed):
+                core._bridge_port_of("ether2")
+        with patch.object(core, "router", side_effect=lambda c: "0 interface=ether2\n" if c == befehl else ""):
+            self.assertIsNone(core._bridge_port_of("ether2"))
+        with patch.object(core, "router", side_effect=lambda c: "0 interface=ether2 bridge=br\n" if c == befehl else ""):
+            self.assertEqual(core._bridge_port_of("ether2"), "br")
+
+
+class BefehlSchutzTests(unittest.TestCase):
+    """Letzte Schutzschicht in core.router: Was die Struktur eines Befehls aendert, wird nicht gesendet."""
+
+    GUT = (
+        '/ip firewall filter print terse where chain=input',
+        '/interface list print terse where name="a;b [c] d"',
+        '/ip route print terse where dst-address="0.0.0.0/0" and !disabled',
+        '/ip dhcp-server lease remove [find mac-address="AA:BB" and address="1.1.1.1"]',
+        '/ip firewall nat remove [find where comment~"^cockpit"]',
+        ':put [/ip firewall filter print as-value where chain="input"]',
+        ':put [:serialize to=json options=json.no-string-conversion value=[/interface print as-value]]',
+        ':foreach i in=[/ip firewall filter find where chain="input"] do={:put $i}',
+        '/user set [find name="a"] password="p\\"w\\$x;y"',
+        '/ip firewall filter add chain=input action=accept comment="x; y [z]"',
+    )
+    BOESE = (
+        ('/interface list print terse where name="x"; /system reboot; :put "y"', "zweite Anweisung"),
+        ('/ip dhcp-server lease add server=[/system/reboot] comment=""', "unbekannter Befehl"),
+        ('/ip firewall filter add chain=input place-before=[/system reboot]', "unbekannter Befehl"),
+        ('/ip address print terse where interface="$[/system reboot]"', "Befehl im Text"),
+        ('/ip address print terse where interface="$(/system reboot)"', "Befehl im Text"),
+        ('/ip firewall filter set 0 comment=$[/system reboot]', "Befehl als Wert"),
+        ('/ip address print terse where interface="x', "offenes Anfuehrungszeichen"),
+        ('/ip address print\n/system reboot', "Zeilenumbruch"),
+    )
+
+    def test_gueltige_befehle_gehen_durch(self):
+        for befehl in self.GUT:
+            with self.subTest(befehl=befehl):
+                self.assertIsNone(routeros.befehl_unsicher(befehl))
+
+    def test_eingeschleuste_befehle_werden_erkannt(self):
+        for befehl, grund in self.BOESE:
+            with self.subTest(befehl=befehl):
+                self.assertIn(grund, routeros.befehl_unsicher(befehl.replace("\\n", "\n")) or "")
+
+    def test_escape_haelt_den_text_zusammen(self):
+        self.assertIsNone(routeros.befehl_unsicher(r'/x y="a\"; b"'))
+        self.assertEqual(routeros.befehl_unsicher(r'/x y="a\\"; /system reboot; :put "b"'), "zweite Anweisung")
+        self.assertIsNone(routeros.befehl_unsicher(r'/x y="a\\"'))
+        self.assertIsNone(routeros.befehl_unsicher(r'/x y="a\$[b]"'))
+
+    def test_schreibende_klammern_gelten_nie_als_lesen(self):
+        for befehl in ("/x y=[/file remove find]", "/x y=[/system script run print]", "/x y=[/user set get]"):
+            with self.subTest(befehl=befehl):
+                self.assertEqual(routeros.befehl_unsicher(befehl), "unbekannter Befehl in Klammern")
+
+    def test_lesende_klammern_gehen_durch(self):
+        for befehl in (':put [/ip dns get servers]', ':put [/interface wifi get [find name="w"] security.passphrase]',
+                       ':put [/interface wireless security-profiles get [find name="d"] wpa2-pre-shared-key]'):
+            with self.subTest(befehl=befehl):
+                self.assertIsNone(routeros.befehl_unsicher(befehl))
+    def test_core_router_sendet_nichts(self):
+        with patch.object(core, "run_command") as senden, patch.object(core, "current_conn", return_value={"host": "h", "user": "u", "password": "p", "ssh_port": 22}):
+            with self.assertRaises(routeros.RouterWertUnsicher):
+                core.router('/a b="x"; /system reboot; :put "y"')
+            senden.assert_not_called()
+            core.router('/ip address print terse')
+            senden.assert_called_once()
+
 
 class GastPfadTests(unittest.TestCase):
     """Das Gesamturteil ueber Layer 2 und Layer 3. Die Topologien entsprechen den Szenarien des

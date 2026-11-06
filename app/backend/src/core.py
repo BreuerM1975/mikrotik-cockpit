@@ -29,6 +29,8 @@ from flask import request
 
 from config import load_config
 from routeros import (
+    befehl_unsicher,
+    RouterWertUnsicher,
     FLAG_I,
     REGEL_UNKLAR,
     RouterCommandFailed,
@@ -164,6 +166,9 @@ def current_conn() -> dict:
 
 
 def router(command: str) -> str:
+    grund = befehl_unsicher(command)
+    if grund:
+        raise RouterWertUnsicher(grund)
     conn = current_conn()
     return run_command(
         conn["host"], conn["user"], conn["password"], conn["ssh_port"], command,
@@ -192,6 +197,25 @@ def _routeros_value(value: str, field: str, maximum: int = 64) -> str:
     ):
         raise ValueError(field)
     return _routeros_escape(value)
+
+
+def _name_sicher(name: str) -> bool:
+    try:
+        return _routeros_value(name, "name") == name
+    except ValueError:
+        return False
+
+
+def _gelesener_name(name: str) -> str:
+    """Ein vom Router gelesener Name fuer den naechsten Befehl.
+
+    Am CHR gemessen (2026-11-06): RouterOS nimmt Namen mit " und ; an, und ein so eingebetteter Befehl laeuft.
+    Ein schwacher Benutzer koennte damit ueber die Sitzung des Cockpits Befehle ausfuehren. Ein solcher Name gilt
+    deshalb als Lesefehler. Der Name kommt unveraendert zurueck, weil Aufrufer ihn mit anderen Rohnamen vergleichen.
+    """
+    if not _name_sicher(name):
+        raise RouterWertUnsicher("Name am Router nicht sicher verwendbar")
+    return name
 
 
 def _routeros_text(value: str, field: str, maximum: int = 128) -> str:
@@ -506,9 +530,10 @@ def _resolve_interface_list_members(list_name: str, nur_aktive: bool = False) ->
     if list_name in _LISTEN_OHNE_ZEILEN:
         return None
     try:
-        definition = parse_terse(router(f'/interface list print terse where name="{list_name}"'))
-        output = router(f'/interface list member print terse where list="{list_name}"')
-    except (RouterCommandFailed, RouterUnreachable):
+        sicher = _gelesener_name(list_name)
+        definition = parse_terse(router(f'/interface list print terse where name="{sicher}"'))
+        output = router(f'/interface list member print terse where list="{sicher}"')
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
         return None
     if any(row.get(feld) not in (None, "", "none") for row in definition for feld in ("include", "exclude")):
         return None
@@ -640,7 +665,8 @@ def _bridge_port_of(safe_interface: str) -> str | None:
     """Liefert den Bridge-Namen, wenn "safe_interface" ein Bridge-Port ist, sonst None."""
     # Ein Port darf mehrere Zeilen haben (am CHR gemessen), nur eine aktive verbindet ihn wirklich.
     rows = _terse_ohne_abgeschaltete(router(f'/interface bridge port print terse where interface="{safe_interface}"'))
-    return rows[0].get("bridge") if rows else None
+    bridge = rows[0].get("bridge") if rows else None
+    return _gelesener_name(bridge) if bridge else None
 
 
 def _guest_bridge_bypass(safe_interface: str) -> bool | None:
@@ -999,6 +1025,8 @@ def _vlan_isolation(safe_interface: str, bridge_name: str) -> bool | None:
     bridge_ist_lan = bridge_name in lan_members
     if bridge_ist_lan and pvid == zeile.get("pvid", "1"):
         return False
+    if not all(_name_sicher(port) for port in ungetaggt):
+        return None
     # Ein zweites Funkband desselben Gastnetzes ist kein Hausnetz.
     _, gast_ssid = _funknetz(safe_interface)
     unklar = False
@@ -1156,7 +1184,7 @@ def _zustand_unzuverlaessig(filter_path: str) -> bool:
         if parse_colon(router("/ip firewall connection tracking print")).get("enabled", "").strip().lower() == "no":
             return True
         return any(row.get(REGEL_UNKLAR) or row.get("action") == "notrack" for row in parse_regeln(router(f"{raw} print terse")))
-    except (RouterCommandFailed, RouterUnreachable):
+    except (RouterCommandFailed, RouterUnreachable, RouterTimeout):
         return True
 
 
@@ -1186,7 +1214,7 @@ def _absender_schliesst_gast_aus(row: dict, eingang: set[str], filter_path: str)
             return False
         absender = ipaddress.ip_network(wert, strict=False)
         for name in eingang:
-            zeilen = _terse_ohne_abgeschaltete(router(f'/ip address print terse where interface="{name}"'))
+            zeilen = _terse_ohne_abgeschaltete(router(f'/ip address print terse where interface="{_gelesener_name(name)}"'))
             if not zeilen:
                 return False
             for zeile in zeilen:
@@ -1231,6 +1259,8 @@ def _gast_eingang(safe_interface: str, filter_path: str = "/ip firewall filter",
         kandidaten = {row["name"] for row in vlan_rows if row.get("vlan-id") == pvid and row.get("name")}
         if pvid == zeile.get("pvid", "1"):
             kandidaten.add(bridge_name)
+        if not all(_name_sicher(name) for name in kandidaten):
+            return None
     else:
         kandidaten = {bridge_name}
     if auch_ohne_adresse:
@@ -1282,7 +1312,7 @@ def _ipv6_relevant() -> bool | None:
         if "bad command name" in message or "no such command" in message:
             return False
         return None
-    except RouterUnreachable:
+    except (RouterUnreachable, RouterTimeout):
         return None
     if not settings:
         return None

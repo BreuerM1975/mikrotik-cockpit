@@ -19,6 +19,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 import core
 from routeros import (
+    RouterWertUnsicher,
     RouterAuthFailed,
     RouterCommandFailed,
     RouterTimeout,
@@ -53,6 +54,12 @@ def handle_timeout(exc):
 @app.errorhandler(RouterAuthFailed)
 def handle_auth_failed(exc):
     return jsonify({"error": "auth_failed", "message": "Benutzername oder Passwort falsch"}), 401
+
+
+@app.errorhandler(RouterWertUnsicher)
+def handle_unsafe_router_value(_exc):
+    return jsonify({"error": "unsafe_router_value",
+                    "message": "Das Cockpit hat den Befehl nicht gesendet, weil ein Name auf dem Router unsichere Zeichen enthält."}), 502
 
 
 @app.errorhandler(RouterCommandFailed)

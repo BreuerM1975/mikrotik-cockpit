@@ -517,7 +517,7 @@ function todayImportant() {
   const warning = checks.find((check) => check.status === "warn");
   if (warning) return { tone: "warning", eyebrow: "Heute wichtig", title: warning.label, detail: warning.plain || warning.detail, button: "Jetzt prüfen" };
   const unknown = checks.find((check) => check.status === "unknown");
-  if (unknown) return { tone: "neutral", eyebrow: "Heute wichtig", title: "Sicherheits-Check vervollständigen", detail: unknown.plain || `${unknown.label}: ${unknown.detail}`, button: "Details ansehen" };
+  if (unknown) return { tone: "neutral", mark: "?", eyebrow: "Noch offen", title: "Offene Fragen im Sicherheits-Check", detail: unknown.plain || `${unknown.label}: ${unknown.detail}`, button: "Details ansehen" };
   if (state.status?.internet && state.status.internet !== "up") return { tone: "warning", eyebrow: "Heute wichtig", title: "Internetverbindung prüfen", detail: "Der Router meldet derzeit keine aktive Verbindung zum Internet.", button: "Status ansehen" };
   if (!state.securityCheck) return { tone: "neutral", eyebrow: "Heute wichtig", title: "Heimnetz wird geprüft", detail: "Sobald die Routerdaten vorliegen, zeigen wir dir genau eine sinnvolle nächste Aktion.", button: "Sicherheits-Check öffnen" };
   return { tone: "good", eyebrow: "Heute wichtig", title: "Dein Heimnetz ist gut aufgestellt", detail: "Die geprüften Punkte sind in Ordnung. Du musst gerade nichts ändern.", button: "Sicherheits-Check ansehen" };
@@ -534,7 +534,7 @@ function renderTodayImportant() {
   }
   const item = todayImportant();
   card.className = `today-important ${item.tone}`;
-  card.innerHTML = `<div class="today-important-mark" aria-hidden="true">${item.tone === "good" ? "✓" : "!"}</div><div class="today-important-copy"><p class="eyebrow">${escapeHtml(item.eyebrow)}</p><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p></div><button class="secondary-button" type="button" data-action="show-page-security">${escapeHtml(item.button)} →</button>`;
+  card.innerHTML = `<div class="today-important-mark" aria-hidden="true">${item.mark || (item.tone === "good" ? "✓" : "!")}</div><div class="today-important-copy"><p class="eyebrow">${escapeHtml(item.eyebrow)}</p><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.detail)}</p></div><button class="secondary-button" type="button" data-action="show-page-security">${escapeHtml(item.button)} →</button>`;
 }
 
 function renderStatus() {
