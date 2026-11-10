@@ -105,7 +105,7 @@ four files into this checkout and can remove them again.
 
 ### Prerequisites
 
-- A **Linux desktop** (Windows version: planned after Linux validation)
+- A **Linux desktop** (no native Windows or macOS version is planned; use [Docker](#run-in-docker) there)
 - **Python 3.10+** with `pip`
 - **sshpass** — install via your package manager:
   ```bash
@@ -155,7 +155,7 @@ Enter your router's IP address, username, and password — just like WinBox.
 ### Run in Docker
 
 Prefer to run Cockpit on a NAS, a Proxmox host or a small home server — or are you on **Windows
-or macOS**, where there is no installer yet? The repository ships a `Dockerfile` and a
+or macOS**, where there is no native installer? The repository ships a `Dockerfile` and a
 `docker-compose.yml`:
 
 ```bash
